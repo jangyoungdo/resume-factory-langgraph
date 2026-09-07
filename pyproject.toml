@@ -1,0 +1,62 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "resume-factory-langgraph"
+version = "0.1.0"
+description = "Evidence-grounded multi-agent cover-letter workflow built with LangGraph and MCP"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+license = { text = "MIT" }
+authors = [{ name = "jangyoungdo" }]
+dependencies = [
+  "aiosqlite>=0.20",
+  "langchain>=1.0,<2",
+  "langchain-mcp-adapters==0.3.2",
+  "langchain-openai>=1.0,<2",
+  "langgraph>=1.0,<2",
+  "langgraph-checkpoint-sqlite>=3.0,<4",
+  "mcp[cli]>=1.28,<2",
+  "mlflow>=3.0,<4",
+  "notion-client>=2.2,<3",
+  "numpy>=2,<3",
+  "pydantic>=2.10,<3",
+  "python-dotenv>=1.0,<2",
+  "rich>=13,<15",
+  "sentence-transformers>=3,<6",
+  "tiktoken>=0.8,<1",
+  "typer>=0.15,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "mypy>=1.14,<2",
+  "pip-tools>=7.4,<8",
+  "pytest>=8,<10",
+  "pytest-asyncio>=0.25,<2",
+  "ruff>=0.9,<1",
+]
+
+[project.scripts]
+rf = "resume_factory.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/resume_factory"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+packages = ["resume_factory"]
