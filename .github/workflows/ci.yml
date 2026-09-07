@@ -31,5 +31,6 @@ jobs:
       - run: npm ci
       - run: npm audit --audit-level=high
       - run: npm run diagrams:svg:ci
-      - run: git diff --exit-code -- docs/architecture/*.svg
+      # Font metrics differ across macOS and Linux; compilation is deterministic,
+      # while byte-for-byte SVG/PNG layout comparison is not portable.
       - run: python scripts/check_diagram_assets.py
