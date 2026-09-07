@@ -5,6 +5,7 @@ import re
 from collections import Counter
 from collections.abc import Mapping
 
+from .editorial_policy import has_low_value_caveat, has_scope_qualifier, has_vague_result
 from .schemas import (
     ApplicationInput,
     DraftAnswer,
@@ -95,7 +96,81 @@ def validate_answers(application: ApplicationInput, answers: list[DraftAnswer]) 
                         message=f"금지된 일반론 표현: {phrase}",
                     )
                 )
+        scope_sentences = [
+            sentence
+            for sentence in answer.sentence_plans
+            if has_scope_qualifier(sentence.text)
+        ]
+        if len(scope_sentences) > 1:
+            issues.append(
+                ValidationIssue(
+                    code="REPEATED_SCOPE_QUALIFIER",
+                    severity="hard_fail",
+                    message="사실 범위 설명은 최초 맥락에서 한 번만 사용해야 합니다.",
+                    sentence_id=scope_sentences[1].sentence_id,
+                )
+            )
+        judgment_indexes = [
+            index
+            for index, sentence in enumerate(answer.sentence_plans)
+            if sentence.role is SentenceRole.JUDGMENT
+        ]
+        action_indexes = [
+            index
+            for index, sentence in enumerate(answer.sentence_plans)
+            if sentence.role is SentenceRole.ACTION
+        ]
+        result_indexes = [
+            index
+            for index, sentence in enumerate(answer.sentence_plans)
+            if sentence.role in {SentenceRole.RESULT, SentenceRole.VALIDATION}
+        ]
+        if not any(
+            judgment_index < action_index < result_index
+            for judgment_index in judgment_indexes
+            for action_index in action_indexes
+            for result_index in result_indexes
+        ):
+            issues.append(
+                ValidationIssue(
+                    code="NO_ACTION_RESULT_CHAIN",
+                    severity="hard_fail",
+                    message="판단 뒤의 구체 행동과 그 이후 검증 결과가 연결되지 않았습니다.",
+                )
+            )
         for sentence in answer.sentence_plans:
+            if not sentence.selling_point.strip() or not (
+                sentence.evidence_event_id or sentence.company_connection
+            ):
+                issues.append(
+                    ValidationIssue(
+                        code="NO_SENTENCE_VALUE",
+                        severity="hard_fail",
+                        message="문장에 판매 가치와 근거 또는 회사 연결이 필요합니다.",
+                        sentence_id=sentence.sentence_id,
+                    )
+                )
+            if has_low_value_caveat(sentence.text):
+                issues.append(
+                    ValidationIssue(
+                        code="LOW_VALUE_DEFENSIVE_CAVEAT",
+                        severity="hard_fail",
+                        message=(
+                            "사실 경계는 내부 검증에 남기고 독자 가치가 없는 보험 문장은 "
+                            "본문에서 제거해야 합니다."
+                        ),
+                        sentence_id=sentence.sentence_id,
+                    )
+                )
+            if has_vague_result(sentence.text):
+                issues.append(
+                    ValidationIssue(
+                        code="VAGUE_RESULT",
+                        severity="hard_fail",
+                        message="결과를 추상적으로 평가하지 말고 관찰 가능한 변화를 써야 합니다.",
+                        sentence_id=sentence.sentence_id,
+                    )
+                )
             if sentence.evidence_event_id and sentence.evidence_event_id not in evidence_by_id:
                 issues.append(
                     ValidationIssue(
@@ -126,6 +201,35 @@ def validate_answers(application: ApplicationInput, answers: list[DraftAnswer]) 
                         )
                     )
         _validate_forbidden_combinations(answer, evidence_by_id, issues)
+        question = next(
+            item for item in application.questions if item.question_id == answer.question_id
+        )
+        if question.supporting_evidence_ids:
+            supporting_plans = [
+                sentence
+                for sentence in answer.sentence_plans
+                if sentence.evidence_event_id in question.supporting_evidence_ids
+            ]
+            if not supporting_plans:
+                issues.append(
+                    ValidationIssue(
+                        code="LEARNING_TRANSFER_MISSING",
+                        severity="hard_fail",
+                        message="후행 경험에서 배운 방식의 재적용을 근거로 증명해야 합니다.",
+                    )
+                )
+            elif not any(
+                sentence.role
+                in {SentenceRole.CAUSAL_BRIDGE, SentenceRole.RESULT, SentenceRole.VALIDATION}
+                for sentence in supporting_plans
+            ):
+                issues.append(
+                    ValidationIssue(
+                        code="LEARNING_TRANSFER_RESULT_MISSING",
+                        severity="hard_fail",
+                        message="후행 적용의 행동뿐 아니라 확인된 결과까지 연결해야 합니다.",
+                    )
+                )
 
     role_counts = Counter(sentence.role for answer in answers for sentence in answer.sentence_plans)
     total = sum(role_counts.values()) or 1
@@ -135,6 +239,7 @@ def validate_answers(application: ApplicationInput, answers: list[DraftAnswer]) 
         SentenceRole.ACTION,
         SentenceRole.RESULT,
         SentenceRole.VALIDATION,
+        SentenceRole.CAUSAL_BRIDGE,
     }
     perspective_roles = {SentenceRole.PERSPECTIVE, SentenceRole.DIFFERENTIATION}
     transfer_roles = {SentenceRole.COMPANY_NEED, SentenceRole.TRANSFER}

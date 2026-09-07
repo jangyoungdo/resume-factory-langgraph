@@ -94,6 +94,12 @@ async def load_application_from_mcp(
             )
             questions = question_result.get("questions") or []
             mapping = application.get("evidence_ids_by_question") or {}
+            supporting_mapping = application.get("supporting_evidence_ids_by_question") or {}
+            for question in questions:
+                question_id = str(question["question_id"])
+                question["supporting_evidence_ids"] = [
+                    str(item) for item in supporting_mapping.get(question_id, [])
+                ]
             await asyncio.gather(
                 *(
                     invoke(
@@ -117,6 +123,7 @@ async def load_application_from_mcp(
                 if not event_id:
                     raise IntakeError(f"no approved evidence ID for {question_id}")
                 requested_ids.append(str(event_id))
+                requested_ids.extend(question["supporting_evidence_ids"])
 
             async def load_evidence(event_id: str) -> EvidencePacket:
                 raw, boundary = await asyncio.gather(

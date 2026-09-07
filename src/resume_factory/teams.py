@@ -8,7 +8,15 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send
 
 from .agents import AgentBackend, AgentSpec
-from .schemas import AgentProposal, CallKind, ExecutionMode, ModelTier, TeamDecision
+from .editorial_policy import has_low_value_caveat, has_scope_qualifier, has_vague_result
+from .schemas import (
+    AgentProposal,
+    CallKind,
+    ExecutionMode,
+    ModelTier,
+    SentenceRole,
+    TeamDecision,
+)
 
 
 @dataclass(frozen=True)
@@ -343,6 +351,23 @@ def _critic_required(
             return True
         if not draft.direct_answer.strip() or not draft.company_transfer.strip():
             return True
+        texts = [sentence.text for sentence in draft.sentence_plans]
+        if any(has_low_value_caveat(text) or has_vague_result(text) for text in texts):
+            return True
+        if sum(has_scope_qualifier(text) for text in texts) > 1:
+            return True
+        if brief.get("learning_transfer_required"):
+            support_ids = {
+                str(item["event_id"]) for item in brief.get("supporting_evidence", [])
+            }
+            grounded_support = {
+                sentence.evidence_event_id
+                for sentence in draft.sentence_plans
+                if sentence.role
+                in {SentenceRole.CAUSAL_BRIDGE, SentenceRole.RESULT, SentenceRole.VALIDATION}
+            }
+            if not support_ids.issubset(grounded_support):
+                return True
     return False
 
 

@@ -32,6 +32,13 @@ def test_application_requires_evidence() -> None:
         ApplicationInput.model_validate(payload)
 
 
+def test_application_rejects_unknown_supporting_evidence() -> None:
+    payload = ApplicationInput.model_validate_json(FIXTURE.read_text(encoding="utf-8")).model_dump()
+    payload["questions"][0]["supporting_evidence_ids"] = ["SYNTH-MISSING"]
+    with pytest.raises(ValueError, match="unknown supporting evidence IDs"):
+        ApplicationInput.model_validate(payload)
+
+
 def test_submission_text_counts_headline_and_one_newline() -> None:
     answer = DraftAnswer(
         question_id="Q1",

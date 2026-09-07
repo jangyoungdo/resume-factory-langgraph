@@ -168,7 +168,8 @@ def build_graph(
                 "투자 전 실패비용을 줄이는 판단 방식"
             ),
             primary_differentiator=(
-                "결과를 과장하지 않고 시험 조건과 사용자 흐름까지 추적하는 실행력"
+                "시험 조건과 사용자 흐름을 끝까지 추적해 "
+                "팀이 같은 기준으로 검증하게 하는 실행력"
             ),
             supporting_differentiators=capabilities[:3] or ["근거 기반 판단"],
             proof_events=[item.event_id for item in selected],
@@ -228,7 +229,9 @@ def build_graph(
                 "evidence_ids": [item.event_id for item in app.evidence],
                 "output_contract": (
                     "drafts 배열에 세 문항을 모두 반환. 사실·sentence_id·evidence_id를 "
-                    "보존하며 반복과 목소리만 통합 편집"
+                    "보존하며 반복과 목소리만 통합 편집. 최초 맥락 뒤의 반복 방어 문장, "
+                    "독자 가치 없는 미측정 설명, 추상적인 좋은 결과를 제거한다. 판단 문장은 "
+                    "구체 기술 행동과 검증 결과로 이어지게 하되 새 사실은 추가하지 않는다"
                 ),
             },
             tier=ModelTier.TERRA,
@@ -418,7 +421,7 @@ async def run_resume_graph(
         total_cost_usd=round(sum(call.estimated_cost_usd or 0 for call in calls), 6),
         cost_complete=all(call.cost_status is not CostStatus.UNKNOWN for call in calls),
         price_catalog_version=backend.price_catalog_version,
-        prompt_versions={"core": "v0.6.0"},
+        prompt_versions={"core": "v0.6.1-human-editorial"},
         metadata={"character_rewrite_attempts": state.get("character_rewrite_attempts", [])},
         provider=backend.provider,
         billing_mode=backend.billing_mode,
@@ -474,6 +477,11 @@ def _writing_brief(
     evidence: EvidencePacket,
     positioning: PositioningBrief,
 ) -> dict[str, Any]:
+    supporting_ids = [str(item) for item in question.get("supporting_evidence_ids", [])]
+    supporting_evidence = [
+        item.model_dump() for item in app.evidence if item.event_id in supporting_ids
+    ]
+    learning_transfer = bool(supporting_evidence) and _is_learning_question(str(question["text"]))
     return {
         "company": app.company,
         "job": app.job,
@@ -483,16 +491,40 @@ def _writing_brief(
         "positioning": positioning.model_dump(),
         "transfer": transfer.model_dump(),
         "evidence": evidence.model_dump(),
-        "evidence_ids": [evidence.event_id],
+        "supporting_evidence": supporting_evidence,
+        "evidence_ids": [evidence.event_id, *supporting_ids],
+        "learning_transfer_required": learning_transfer,
         "rules": [
             "모든 문장은 독립적인 판매 가치와 역할을 가짐",
             "수치는 verified numeric_authorities만 사용",
             "실제 양산 실적으로 확대하지 않음",
+            (
+                "사실 범위는 최초 맥락에서 교육용·가상·프로젝트 등 긍정형 표현으로 한 번만 "
+                "밝히고 뒤에서 반복하지 않음"
+            ),
+            (
+                "경계·미측정 항목은 interview_defense에 보존하되, 독자에게 도움이 없는 "
+                "'일 뿐', '보장한 값이 아니다', '실제 경험이 아니다' 같은 보험 문장은 본문 금지"
+            ),
+            (
+                "판단을 설명한 뒤 반드시 구체적인 기술 구조·입출력·제어 조건·검증 행동 중 "
+                "하나와 관찰 가능한 결과를 연결하며 '좋은 결과'처럼 뭉뚱그리지 않음"
+            ),
+            (
+                "질문의 섹션명이나 영문 라벨에 맞추지 말고, 질문이 요구하는 노력·성공/실패·"
+                "과정·배움을 직접 답함"
+            ),
+            (
+                "learning_transfer_required=true이면 supporting_evidence를 1~2문장만 사용해 "
+                "배운 방식을 후행 프로젝트에 적용한 행동과 구체 결과를 증명하되, 다른 문항의 "
+                "기술 설명을 반복하지 않음"
+            ),
             "소제목·줄바꿈·공백 포함 Python len 기준 목표 구간 준수",
             (
-                "정확히 10개 sentence plan을 사용: answer 1, company_need 1, "
+                "기본 10개 sentence plan을 사용: answer 1, company_need 1, "
                 "perspective 1, differentiation 1, problem 1, judgment 1, action 1, "
-                "result 1, validation 1, transfer 1"
+                "result 1, validation 1, transfer 1. learning_transfer_required=true이면 "
+                "supporting evidence를 인용하는 causal_bridge 1개를 추가할 수 있음"
             ),
             "근거 문장은 interview_defensible=true, 회사 전이 문장은 company_connection 명시",
         ],
@@ -501,6 +533,14 @@ def _writing_brief(
             "각 문장은 evidence 또는 company_connection을 가짐"
         ),
     }
+
+
+def _is_learning_question(text: str) -> bool:
+    normalized = text.lower()
+    return (
+        ("배웠" in text or "배운" in text or "learn" in normalized)
+        and any(token in text for token in ("경험", "성공", "실패", "노력"))
+    )
 
 
 def _answer_from_proposal(proposal: DraftProposal, character_limit: int | None) -> DraftAnswer:
@@ -563,7 +603,7 @@ def _first_action(question_id: str, company: str) -> str:
         ),
         "Q2": (
             f"{company} 설비의 정지·복구 조건을 기능별로 나누고 "
-            "시험 결과와 미측정 범위를 함께 기록하겠습니다."
+            "변경 전후 시험과 조치 이력을 연결하겠습니다."
         ),
         "Q3": (
             f"{company} 현업 사용 순서와 개발 변경 범위를 먼저 합의하고 "
@@ -575,6 +615,6 @@ def _first_action(question_id: str, company: str) -> str:
 def _output_kpi(question_id: str) -> str:
     return {
         "Q1": "대안별 병목·처리량·초기 안정화 조건",
-        "Q2": "정지·복구 시험의 재현성과 미확인 위험",
+        "Q2": "정지·복구 시험의 재현성과 장애 재발 방지",
         "Q3": "요구사항·변경·시험 결과의 추적성",
     }.get(question_id, "검증 가능한 직무 산출물")

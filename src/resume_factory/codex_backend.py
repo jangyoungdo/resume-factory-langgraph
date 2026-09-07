@@ -446,12 +446,15 @@ class CodexExecBackend:
         if team == "writing_council" and role.endswith("_writer"):
             role_contract = (
                 " draft를 반드시 작성하라. headline과 sentence_plans를 포함하고, "
-                "sentence_plans의 문장 연결은 canonical 제출문이어야 한다."
+                "sentence_plans의 문장 연결은 canonical 제출문이어야 한다. 사실 경계는 "
+                "interview_defense에 보존하고 본문에서 보험 문장으로 반복하지 말라. "
+                "판단은 구체 기술 행동과 관찰 가능한 결과로 완결하라."
             )
         elif team == "writing_council" and role == "writing_editor":
             role_contract = (
                 " 익명 후보를 비평 결과와 대조해 하나로 통합하고 draft를 반드시 반환하라. "
-                "후보에 없는 사실은 추가하지 말라."
+                "후보에 없는 사실은 추가하지 말라. 반복 방어 문장과 독자 가치 없는 단서, "
+                "추상적 결과를 제거하고 행동-결과 인과를 보존하라."
             )
         elif team == "writing_council" and role.endswith("_critic"):
             role_contract = " 후보를 비평하되 draft는 비워 두고 recommendation에 결함을 요약하라."
@@ -464,7 +467,8 @@ class CodexExecBackend:
             role_contract = (
                 " repairs의 모든 문항을 같은 순서의 drafts 배열로 반환하라. "
                 " Hard Gate 밖 문항만 고치고 목표 구간만 벗어난 문항은 건드리지 말라. "
-                "Python len 기준에는 소제목과 줄바꿈 한 자가 포함된다."
+                "Python len 기준에는 소제목과 줄바꿈 한 자가 포함된다. 부족한 분량을 보험 "
+                "문장이나 일반론으로 채우지 말고 판단 이유, 기술 행동, 검증 결과 순으로 확장하라."
             )
         return (
             "당신은 근거 기반 자기소개서 버티컬 AI의 전문 에이전트다. "

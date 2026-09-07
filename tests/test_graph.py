@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from resume_factory.agents import DeterministicBackend
-from resume_factory.graph import _outside_hard_gate, run_resume_graph
+from resume_factory.graph import _outside_hard_gate, _writing_brief, run_resume_graph
 from resume_factory.schemas import ApplicationInput, CallKind, ExecutionMode
 
 FIXTURE = Path(__file__).parent / "fixtures" / "sample_application.json"
@@ -142,3 +142,38 @@ async def test_multiple_failed_questions_use_one_character_repair_call() -> None
     assert result.telemetry.base_call_budget == 19
     assert result.telemetry.hard_call_cap == 24
     assert len(backend.calls) <= 24
+
+
+async def test_learning_question_receives_followup_evidence_and_editorial_rules() -> None:
+    application = ApplicationInput.model_validate_json(FIXTURE.read_text(encoding="utf-8"))
+    primary = application.evidence[0]
+    followup = primary.model_copy(
+        update={"event_id": "SYNTH-FOLLOWUP-02", "title": "후행 적용"}
+    )
+    application.evidence.append(followup)
+    application.questions[0].text = (
+        "가장 많은 노력을 쏟은 실패 경험과 그 과정을 통해 무엇을 배웠는지 쓰십시오."
+    )
+    application.questions[0].supporting_evidence_ids = [followup.event_id]
+    backend = DeterministicBackend()
+    result = await run_resume_graph(application, backend, ExecutionMode.ECONOMY)
+
+    brief = _writing_brief(
+        application,
+        application.questions[0].model_dump(),
+        result.question_contracts[0],
+        result.transfer_contracts[0],
+        primary,
+        result.positioning_brief,
+    )
+
+    assert brief["learning_transfer_required"] is True
+    assert brief["evidence_ids"] == [primary.event_id, followup.event_id]
+    assert [item["event_id"] for item in brief["supporting_evidence"]] == [followup.event_id]
+    joined_rules = " ".join(brief["rules"])
+    assert "보험 문장은 본문 금지" in joined_rules
+    assert "관찰 가능한 결과" in joined_rules
+    assert "후행 프로젝트" in joined_rules
+    assert any(
+        call.agent_role == "writing_council_anonymous_critic" for call in backend.calls
+    )

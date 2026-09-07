@@ -422,7 +422,7 @@ def _deterministic_draft(brief: dict[str, Any]) -> DraftProposal:
         (SentenceRole.RESULT, str(evidence["results"][0]), "검증 결과", event_id),
         (
             SentenceRole.DIFFERENTIATION,
-            "불확실한 부분은 성과로 꾸미지 않고 검증 가능한 범위를 분리했습니다.",
+            "판단 조건과 검증 결과를 함께 남겨 팀이 같은 기준으로 다음 행동을 정했습니다.",
             "차별점",
             event_id,
         ),

@@ -109,6 +109,7 @@ class ApplicationQuestion(BaseModel):
     text: str
     character_limit: int = Field(default=600, ge=100, le=5000)
     required: bool = True
+    supporting_evidence_ids: list[str] = Field(default_factory=list)
 
 
 class NumericAuthority(BaseModel):
@@ -152,6 +153,17 @@ class ApplicationInput(BaseModel):
             raise ValueError("at least one application question is required")
         if not self.evidence:
             raise ValueError("at least one evidence packet is required")
+        known_evidence = {item.event_id for item in self.evidence}
+        missing_support = {
+            evidence_id
+            for question in self.questions
+            for evidence_id in question.supporting_evidence_ids
+            if evidence_id not in known_evidence
+        }
+        if missing_support:
+            raise ValueError(
+                "unknown supporting evidence IDs: " + ", ".join(sorted(missing_support))
+            )
         return self
 
 
