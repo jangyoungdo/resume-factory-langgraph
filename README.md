@@ -22,8 +22,17 @@ rf doctor
 rf run --input tests/fixtures/sample_application.json --offline
 ```
 
-API 키 없이 `--offline`으로 전체 그래프와 품질 게이트를 재현할 수 있습니다. 실제 모델을
-사용하려면 `.env`에 `OPENAI_API_KEY`를 설정합니다.
+API 키 없이 `--offline`으로 회귀 테스트를 재현할 수 있습니다. 기본 실제 실행은 ChatGPT로
+로그인한 `codex exec`를 사용하며 API 키를 자식 프로세스에서 제거합니다. 구독 실행의 토큰은
+기록하지만 달러 비용은 `N/A`입니다.
+
+```bash
+codex login
+rf doctor --backend codex
+rf run --application-id <private-id> --backend codex --mode balanced
+rf deliver <run-id>
+rf install-codex-skill
+```
 
 ## 글자 수 품질 게이트
 
@@ -35,9 +44,12 @@ API 키 없이 `--offline`으로 전체 그래프와 품질 게이트를 재현�
 ## CLI
 
 ```text
-rf doctor
+rf doctor --backend codex
 rf index --source <private-evidence-directory>
-rf run --input <private-application-snapshot.json> [--offline]
+rf run --application-id <private-id> --backend codex --mode balanced
+rf run --input <private-application-snapshot.json> --backend offline
+rf resume <run-id>
+rf deliver <run-id>
 rf review <run-id>
 rf render-draft --input <private-submission.json> --output <new-private-draft.md>
 rf usage list
@@ -46,7 +58,13 @@ rf usage compare <run-a> <run-b> --group-by model
 rf feedback <run-id> --decision revised --rating 4 --final-draft <private-final.json>
 rf eval --suite golden
 rf diagram
+rf install-codex-skill
 ```
+
+v0.5의 3문항 balanced 실행은 회사·직무 3회, 질문 전략 3회, 경험·브랜딩 3회,
+문항별 작성위원회 12회, 통합 편집 1회로 기본 22회입니다. 글자 수 재작성과 Sol 판정은
+합계 6회 이내이며 전체 상한은 28회입니다. 최종 문장은 작성위원회의
+`DraftProposal.sentence_plans`에서 직접 조립되어 근거 계보를 유지합니다.
 
 토큰·비용·사용자 수정률 모니터링은 `docs/LLMOPS.md`, 아키텍처와 운영 결정은 `docs/`를
 참고하십시오.
