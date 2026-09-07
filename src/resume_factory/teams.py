@@ -328,13 +328,16 @@ async def _finalize_team(state: TeamRunState) -> dict[str, Any]:
             selected_draft=(adjudication.draft if adjudication else None)
             or lead.draft
             or winner.draft,
+            structured_payload=(
+                adjudication.structured_payload
+                if adjudication and adjudication.structured_payload
+                else lead.structured_payload or winner.structured_payload
+            ),
         )
     }
 
 
-def _critic_required(
-    ranked: list[AgentProposal], brief: dict[str, Any], margin: float
-) -> bool:
+def _critic_required(ranked: list[AgentProposal], brief: dict[str, Any], margin: float) -> bool:
     if margin < 0.3 or any(item.needs_escalation or item.risks for item in ranked):
         return True
     expected = set(str(item) for item in brief.get("evidence_ids", []))
@@ -357,9 +360,7 @@ def _critic_required(
         if sum(has_scope_qualifier(text) for text in texts) > 1:
             return True
         if brief.get("learning_transfer_required"):
-            support_ids = {
-                str(item["event_id"]) for item in brief.get("supporting_evidence", [])
-            }
+            support_ids = {str(item["event_id"]) for item in brief.get("supporting_evidence", [])}
             grounded_support = {
                 sentence.evidence_event_id
                 for sentence in draft.sentence_plans

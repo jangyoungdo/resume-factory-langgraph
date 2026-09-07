@@ -55,8 +55,9 @@ def usage_report(result: RunResult, group_by: GroupBy = "team") -> dict[str, Any
             "optional_used": result.telemetry.optional_calls_used,
             "hard_cap": result.telemetry.hard_call_cap,
         },
-        "character_rewrite_count": len(
-            result.telemetry.metadata.get("character_rewrite_attempts", [])
+        "character_rewrite_count": result.telemetry.metadata.get(
+            "character_rewrite_round_count",
+            len(result.telemetry.metadata.get("character_rewrite_attempts", [])),
         ),
         "total": aggregate_calls(result.telemetry.model_calls)[0],
         "groups": aggregate_calls(result.telemetry.model_calls, group_by),

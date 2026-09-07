@@ -319,11 +319,16 @@ class CodexExecBackend:
         proposal, usage, provider_run_id = self._parse_events(
             stdout.decode("utf-8", errors="replace")
         )
-        return proposal, usage, provider_run_id, {
-            "process_started_at": process_started_at,
-            "first_event_latency_ms": first_event_latency_ms,
-            "provider_execution_ms": int((time.perf_counter() - invocation_started) * 1000),
-        }
+        return (
+            proposal,
+            usage,
+            provider_run_id,
+            {
+                "process_started_at": process_started_at,
+                "first_event_latency_ms": first_event_latency_ms,
+                "provider_execution_ms": int((time.perf_counter() - invocation_started) * 1000),
+            },
+        )
 
     @staticmethod
     def _parse_events(raw: str) -> tuple[AgentProposal, dict[str, int], str | None]:
@@ -367,6 +372,15 @@ class CodexExecBackend:
 
         def visit(node: Any) -> None:
             if isinstance(node, dict):
+                # OpenAI strict structured outputs reject Pydantic defaults,
+                # including defaults emitted next to a ``$ref``. Requiredness
+                # is expressed by the enclosing object's ``required`` array.
+                node.pop("default", None)
+                if "$ref" in node:
+                    ref = node["$ref"]
+                    node.clear()
+                    node["$ref"] = ref
+                    return
                 if node.get("type") == "object" or "properties" in node:
                     node["additionalProperties"] = False
                     if "properties" in node:
@@ -443,7 +457,12 @@ class CodexExecBackend:
     @staticmethod
     def _prompt(role: str, team: str, brief: dict[str, Any]) -> str:
         role_contract = ""
-        if team == "writing_council" and role.endswith("_writer"):
+        if team == "intelligence" and role == "intelligence_lead":
+            role_contract = (
+                " structured_payload.demand_brief를 작성하라. 회사 문제, 직무 책임, KPI, "
+                "실패 위험, 행동 역량과 입력의 source_refs를 제공된 자료 범위에서만 구조화하라."
+            )
+        elif team == "writing_council" and role.endswith("_writer"):
             role_contract = (
                 " draft를 반드시 작성하라. headline과 sentence_plans를 포함하고, "
                 "sentence_plans의 문장 연결은 canonical 제출문이어야 한다. 사실 경계는 "
@@ -461,7 +480,8 @@ class CodexExecBackend:
         elif role == "integration_editor":
             role_contract = (
                 " 입력된 모든 문항을 유지해 drafts 배열에 같은 개수로 반환하라. "
-                "문항 간 목소리만 정리하고 근거 계보를 보존하라."
+                "문항 간 목소리만 정리하고 근거 계보를 보존하라. 각 문항의 "
+                "character_bounds hard_min~hard_max를 반드시 지켜라."
             )
         elif role == "character_budget_batch_rewriter":
             role_contract = (
@@ -469,6 +489,27 @@ class CodexExecBackend:
                 " Hard Gate 밖 문항만 고치고 목표 구간만 벗어난 문항은 건드리지 말라. "
                 "Python len 기준에는 소제목과 줄바꿈 한 자가 포함된다. 부족한 분량을 보험 "
                 "문장이나 일반론으로 채우지 말고 판단 이유, 기술 행동, 검증 결과 순으로 확장하라."
+            )
+        elif team == "question_strategy" and role == "answer_architect":
+            role_contract = (
+                " 모든 문항에 대해 structured_payload.question_narratives 배열을 작성하라. "
+                "각 항목은 QuestionNarrativeContract 스키마를 따르고 질문 유형, 직접 답, 독자가 "
+                "기억할 core_message, 필수·선택 요소, 금지 이탈, 선호 근거 특성, 질문별 서사 "
+                "순서를 포함하라. 질문과 무관한 범용 10문장 구조를 강제하지 말라."
+            )
+        elif role == "human_reader_critic":
+            role_contract = (
+                " 초안 생성 과정과 후보 점수를 모르는 독립 독자로 평가하라. "
+                "structured_payload.editorial_assessment에 질문 적합성·핵심 명료성·논리 연결·"
+                "근거 연결·행동 구체성·회사 전이를 1~5점으로 평가하고, 결함이 있는 정확한 "
+                "sentence_id와 pass|repair|replan 판정을 기록하라. draft는 반환하지 말라."
+            )
+        elif role == "sentence_scoped_editor":
+            role_contract = (
+                " 전체 원고를 재작성하지 말라. structured_payload.edit_operations에 비평이 "
+                "지정한 문장만 replace_sentence, delete_sentence, insert_after, merge_sentences, "
+                "reorder_span 중 하나로 수정하라. 정상 문장과 근거 계보는 변경하지 말고, "
+                "수정 후에도 character_hard_min~character_limit를 반드시 지켜라."
             )
         return (
             "당신은 근거 기반 자기소개서 버티컬 AI의 전문 에이전트다. "

@@ -69,7 +69,10 @@ class Tracker:
         ):
             metrics[key] = float(total[key])
         metrics["character_rewrite_count"] = float(
-            len(result.telemetry.metadata.get("character_rewrite_attempts", []))
+            result.telemetry.metadata.get(
+                "character_rewrite_round_count",
+                len(result.telemetry.metadata.get("character_rewrite_attempts", [])),
+            )
         )
         if result.telemetry.wall_time_ms is not None:
             metrics["wall_time_ms"] = float(result.telemetry.wall_time_ms)

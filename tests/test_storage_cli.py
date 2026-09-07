@@ -106,7 +106,7 @@ def test_execute_creates_review_without_git(tmp_path: Path, monkeypatch) -> None
     assert list((settings.local_dir / "deliverables").glob("*.md"))
 
 
-async def test_performance_cli_reads_v06_timeline(tmp_path: Path, monkeypatch) -> None:
+async def test_performance_cli_reads_v07_timeline(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     application = ApplicationInput.model_validate_json(FIXTURE.read_text(encoding="utf-8"))
     result = await run_resume_graph(
@@ -116,7 +116,7 @@ async def test_performance_cli_reads_v06_timeline(tmp_path: Path, monkeypatch) -
     shown = CliRunner().invoke(app, ["performance", "show", "perf-one", "--timeline"])
     summary = CliRunner().invoke(app, ["performance", "summary", "--limit", "10"])
     assert shown.exit_code == 0
-    assert '"graph_version": "v0.6"' in shown.output
+    assert '"graph_version": "v0.7"' in shown.output
     assert "company_job_intelligence" in shown.output
     assert summary.exit_code == 0
     assert '"status": "provisional"' in summary.output

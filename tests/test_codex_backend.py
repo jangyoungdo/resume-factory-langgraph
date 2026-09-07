@@ -206,3 +206,26 @@ def test_codex_schema_is_strict_at_every_object() -> None:
     assert schema["additionalProperties"] is False
     assert schema["required"] == ["nested"]
     assert schema["properties"]["nested"]["additionalProperties"] is False
+
+
+def test_codex_schema_removes_defaults_and_ref_siblings() -> None:
+    schema = CodexExecBackend._strict_output_schema(
+        {
+            "type": "object",
+            "properties": {
+                "archetype": {
+                    "$ref": "#/$defs/QuestionArchetype",
+                    "default": "freeform",
+                    "title": "Archetype",
+                },
+                "optional": {
+                    "anyOf": [{"type": "string"}, {"type": "null"}],
+                    "default": None,
+                },
+            },
+        }
+    )
+    assert schema["properties"]["archetype"] == {
+        "$ref": "#/$defs/QuestionArchetype"
+    }
+    assert "default" not in schema["properties"]["optional"]

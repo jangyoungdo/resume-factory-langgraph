@@ -3,6 +3,7 @@ from pathlib import Path
 from resume_factory.agents import DeterministicBackend
 from resume_factory.graph import run_resume_graph
 from resume_factory.schemas import ApplicationInput, ExecutionMode, SentenceRole
+from resume_factory.targeted_repair import diagnose_answer_gaps
 from resume_factory.validators import NUMBER_RE, validate_answers
 
 FIXTURE = Path(__file__).parent / "fixtures" / "sample_application.json"
@@ -24,11 +25,29 @@ async def test_unverified_number_is_hard_failure() -> None:
     assert any(issue.code == "UNVERIFIED_NUMBER" for issue in report.issues)
 
 
+async def test_targeted_gap_diagnosis_reports_exact_character_deficit() -> None:
+    application = ApplicationInput.model_validate_json(FIXTURE.read_text(encoding="utf-8"))
+    result = await run_resume_graph(application, DeterministicBackend(), ExecutionMode.ECONOMY)
+    answer = result.answers[0].model_copy(update={"body": result.answers[0].body[:300]})
+    diagnosis = diagnose_answer_gaps(
+        application,
+        answer,
+        result.question_contracts[0],
+        application.evidence[0],
+    )
+
+    assert diagnosis["characters_to_hard_min"] == (
+        result.question_contracts[0].character_hard_min - answer.character_count
+    )
+    assert diagnosis["repair_priorities"]
+
+
 async def test_forbidden_event_combination_is_hard_failure() -> None:
     application = ApplicationInput.model_validate_json(FIXTURE.read_text(encoding="utf-8"))
     second = application.evidence[0].model_copy(
         update={
             "event_id": "SYNTH-PHM-02",
+            "experience_key": "SYNTH_PDM_SECOND",
             "forbidden_combinations": ["SYNTH-PHM-01"],
         }
     )
@@ -72,9 +91,9 @@ async def test_character_budget_hard_and_target_boundaries() -> None:
 async def test_reader_facing_defensive_caveat_is_rejected() -> None:
     application = ApplicationInput.model_validate_json(FIXTURE.read_text(encoding="utf-8"))
     result = await run_resume_graph(application, DeterministicBackend(), ExecutionMode.ECONOMY)
-    result.answers[0].sentence_plans[2].text = (
-        "이 수치는 설정 주기일 뿐 종단 시간을 보장한 값이 아닙니다."
-    )
+    result.answers[0].sentence_plans[
+        2
+    ].text = "이 수치는 설정 주기일 뿐 종단 시간을 보장한 값이 아닙니다."
 
     report = validate_answers(application, result.answers)
 
@@ -95,7 +114,10 @@ async def test_scope_qualifier_may_appear_only_once() -> None:
 async def test_vague_success_claim_is_rejected() -> None:
     application = ApplicationInput.model_validate_json(FIXTURE.read_text(encoding="utf-8"))
     result = await run_resume_graph(application, DeterministicBackend(), ExecutionMode.ECONOMY)
-    result.answers[0].sentence_plans[6].text = "이후 좋은 결과를 얻었습니다."
+    result_sentence = next(
+        item for item in result.answers[0].sentence_plans if item.role is SentenceRole.RESULT
+    )
+    result_sentence.text = "이후 좋은 결과를 얻었습니다."
 
     report = validate_answers(application, result.answers)
 
@@ -118,17 +140,27 @@ async def test_judgment_must_lead_to_action_and_result_in_order() -> None:
 async def test_learning_transfer_requires_supported_followup_result() -> None:
     application = ApplicationInput.model_validate_json(FIXTURE.read_text(encoding="utf-8"))
     followup = application.evidence[0].model_copy(
-        update={"event_id": "SYNTH-FOLLOWUP-02", "title": "후행 프로젝트"}
+        update={
+            "event_id": "SYNTH-FOLLOWUP-02",
+            "experience_key": "SYNTH_FOLLOWUP",
+            "title": "후행 프로젝트",
+        }
     )
     application.evidence.append(followup)
+    application.questions[
+        0
+    ].text = "가장 많은 노력을 기울인 실패 경험과 그 과정에서 무엇을 배웠는지 쓰십시오."
     application.questions[0].supporting_evidence_ids = [followup.event_id]
     result = await run_resume_graph(application, DeterministicBackend(), ExecutionMode.ECONOMY)
 
     missing = validate_answers(application, result.answers)
     assert any(issue.code == "LEARNING_TRANSFER_MISSING" for issue in missing.issues)
 
-    result.answers[0].sentence_plans[7].evidence_event_id = followup.event_id
-    result.answers[0].sentence_plans[7].role = SentenceRole.CAUSAL_BRIDGE
+    supporting = next(
+        item for item in result.answers[0].sentence_plans if item.role is SentenceRole.RESULT
+    )
+    supporting.evidence_event_id = followup.event_id
+    supporting.role = SentenceRole.CAUSAL_BRIDGE
     grounded = validate_answers(application, result.answers)
     assert not any(
         issue.code in {"LEARNING_TRANSFER_MISSING", "LEARNING_TRANSFER_RESULT_MISSING"}

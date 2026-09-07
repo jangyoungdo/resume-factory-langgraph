@@ -6,6 +6,7 @@ import sys
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any, cast
 
 from langchain_mcp_adapters.client import MultiServerMCPClient
@@ -20,6 +21,13 @@ def server_configs() -> dict[str, dict[str, Any]]:
         for key in ("RF_DUAL_BRAIN_ROOT", "RF_NOTION_SNAPSHOT_DIR", "RF_NOTION_TOKEN")
         if (value := os.getenv(key))
     }
+    source_root = str(Path(__file__).resolve().parents[2])
+    inherited_pythonpath = os.getenv("PYTHONPATH")
+    environment["PYTHONPATH"] = (
+        f"{source_root}{os.pathsep}{inherited_pythonpath}"
+        if inherited_pythonpath
+        else source_root
+    )
     return {
         "dual_brain": {
             "command": executable,
@@ -63,6 +71,7 @@ async def open_tools_persistent(
     resolved = configs or server_configs()
     client = MultiServerMCPClient(cast(Any, resolved), tool_name_prefix=True)
     managers = {name: client.session(name) for name in resolved}
+
     async def enter(name: str, manager: Any) -> Any:
         started = time.perf_counter()
         try:
@@ -95,9 +104,6 @@ async def open_tools_persistent(
         yield [tool for group in loaded for tool in group], health
     finally:
         await asyncio.gather(
-            *(
-                managers[name].__aexit__(None, None, None)
-                for name in sessions
-            ),
+            *(managers[name].__aexit__(None, None, None) for name in sessions),
             return_exceptions=True,
         )

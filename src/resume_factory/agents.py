@@ -16,11 +16,13 @@ from .pricing import PriceCatalog
 from .schemas import (
     AgentProposal,
     AgentScore,
+    AgentStructuredPayload,
     BackendProvider,
     BillingMode,
     CallKind,
     CostStatus,
     DraftProposal,
+    EditorialAssessment,
     ModelCallRecord,
     ModelTier,
     PrepSoaraStructure,
@@ -165,6 +167,24 @@ class DeterministicBackend:
         if role == "integration_editor":
             for raw in brief.get("drafts", []):
                 integrated.append(DraftProposal.model_validate(raw))
+        structured_payload = None
+        if role == "human_reader_critic":
+            contract = brief.get("narrative_contract", {})
+            structured_payload = AgentStructuredPayload(
+                editorial_assessment=EditorialAssessment(
+                    question_id=str(brief.get("question_id", question_id or "Q1")),
+                    inferred_takeaway=str(
+                        contract.get("core_message", "검증된 경험의 직무 전이")
+                    ),
+                    question_directness=5,
+                    thesis_clarity=5,
+                    logical_continuity=5,
+                    evidence_to_claim=5,
+                    effort_or_action_specificity=5,
+                    company_transfer=5,
+                    verdict="pass",
+                )
+            )
         return AgentProposal(
             agent_role=role,
             proposal_id=f"{team}-{uuid.uuid4().hex[:8]}",
@@ -177,6 +197,7 @@ class DeterministicBackend:
             needs_escalation=not evidence_ids,
             draft=draft,
             drafts=integrated,
+            structured_payload=structured_payload,
         )
 
 
@@ -393,46 +414,21 @@ def _local_call_record(
 def _deterministic_draft(brief: dict[str, Any]) -> DraftProposal:
     question_id = str(brief["question_id"])
     company = str(brief["company"])
-    job = str(brief["job"])
     evidence = dict(brief["evidence"])
     transfer = dict(brief["transfer"])
     event_id = str(evidence["event_id"])
     raw = [
         (
             SentenceRole.ANSWER,
-            f"이 경험에서 증명한 판단 방식을 {company} {job}에 적용하겠습니다.",
-            "직접 답변",
-            None,
-        ),
-        (
-            SentenceRole.COMPANY_NEED,
-            f"{company} {job}에는 부분 최적화보다 전체 흐름을 보는 판단이 필요합니다.",
-            "회사 직무 수요",
-            None,
-        ),
-        (
-            SentenceRole.PERSPECTIVE,
-            "저는 결과보다 먼저 확인 가능한 근거와 판단의 전제를 고정합니다.",
-            "지원자의 관점",
+            f"저의 경쟁력은 {evidence['title']}에서 기른 판단 방식입니다.",
+            "질문에 대한 핵심 답변",
             event_id,
         ),
         (SentenceRole.PROBLEM, str(evidence["problem"]), "해결 대상", event_id),
         (SentenceRole.JUDGMENT, str(evidence["judgment"]), "판단 이유", event_id),
         (SentenceRole.ACTION, str(evidence["actions"][0]), "구체 행동", event_id),
         (SentenceRole.RESULT, str(evidence["results"][0]), "검증 결과", event_id),
-        (
-            SentenceRole.DIFFERENTIATION,
-            "판단 조건과 검증 결과를 함께 남겨 팀이 같은 기준으로 다음 행동을 정했습니다.",
-            "차별점",
-            event_id,
-        ),
         (SentenceRole.TRANSFER, str(transfer["first_action"]), "입사 후 첫 행동", event_id),
-        (
-            SentenceRole.VALIDATION,
-            f"성과는 {transfer['output_or_kpi']}로 확인하겠습니다.",
-            "검증 기준",
-            event_id,
-        ),
     ]
     plans = [
         SentencePlan(
@@ -443,7 +439,7 @@ def _deterministic_draft(brief: dict[str, Any]) -> DraftProposal:
             evidence_event_id=evidence_id,
             claim_ids=[f"{question_id}-C{index:02d}"],
             company_connection=company
-            if role in {SentenceRole.ANSWER, SentenceRole.COMPANY_NEED, SentenceRole.TRANSFER}
+            if role in {SentenceRole.ANSWER, SentenceRole.TRANSFER}
             else None,
             interview_defensible=evidence_id is not None,
         )
@@ -455,13 +451,13 @@ def _deterministic_draft(brief: dict[str, Any]) -> DraftProposal:
         direct_answer=plans[0].text,
         prep_soara_structure=PrepSoaraStructure(
             p=plans[0].text,
-            r=plans[4].text,
-            e_soara=" ".join(item.text for item in plans[3:8]),
-            p2=plans[8].text,
+            r=plans[2].text,
+            e_soara=" ".join(item.text for item in plans[1:5]),
+            p2=plans[5].text,
         ),
         sentence_plans=plans,
         evidence_ids=[event_id],
-        company_transfer=plans[8].text,
+        company_transfer=plans[5].text,
         interview_defense=[str(item) for item in evidence.get("boundaries", [])],
         confidence=0.88,
     )

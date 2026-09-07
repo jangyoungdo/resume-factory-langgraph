@@ -6,10 +6,12 @@ from collections import Counter
 from collections.abc import Mapping
 
 from .editorial_policy import has_low_value_caveat, has_scope_qualifier, has_vague_result
+from .question_planning import classify_question
 from .schemas import (
     ApplicationInput,
     DraftAnswer,
     EvidencePacket,
+    QuestionArchetype,
     SentenceRole,
     ValidationIssue,
     ValidationReport,
@@ -32,6 +34,7 @@ def validate_answers(application: ApplicationInput, answers: list[DraftAnswer]) 
         question.question_id: question.character_limit for question in application.questions
     }
 
+    primary_keys: dict[str, str] = {}
     for answer in answers:
         limit = question_limits[answer.question_id]
         hard_min = math.ceil(limit * 0.95)
@@ -97,9 +100,7 @@ def validate_answers(application: ApplicationInput, answers: list[DraftAnswer]) 
                     )
                 )
         scope_sentences = [
-            sentence
-            for sentence in answer.sentence_plans
-            if has_scope_qualifier(sentence.text)
+            sentence for sentence in answer.sentence_plans if has_scope_qualifier(sentence.text)
         ]
         if len(scope_sentences) > 1:
             issues.append(
@@ -204,7 +205,48 @@ def validate_answers(application: ApplicationInput, answers: list[DraftAnswer]) 
         question = next(
             item for item in application.questions if item.question_id == answer.question_id
         )
+        archetype = classify_question(question.text)
+        primary_event_id = next(
+            (item for item in answer.evidence_ids if item not in question.supporting_evidence_ids),
+            answer.evidence_ids[0] if answer.evidence_ids else None,
+        )
+        if primary_event_id and primary_event_id in evidence_by_id:
+            primary_keys[answer.question_id] = evidence_by_id[primary_event_id].experience_key
+        if (
+            question.supporting_evidence_ids
+            and archetype is not QuestionArchetype.LEARNING_TRANSFER
+        ):
+            issues.append(
+                ValidationIssue(
+                    code="SUPPORTING_EVIDENCE_NOT_ALLOWED",
+                    severity="hard_fail",
+                    message="배움·실패형 문항만 보조 경험을 사용할 수 있습니다.",
+                )
+            )
+        if len(question.supporting_evidence_ids) > 1:
+            issues.append(
+                ValidationIssue(
+                    code="TOO_MANY_SUPPORTING_EVENTS",
+                    severity="hard_fail",
+                    message="보조 경험은 한 개만 사용할 수 있습니다.",
+                )
+            )
         if question.supporting_evidence_ids:
+            if primary_event_id:
+                primary_key = evidence_by_id[primary_event_id].experience_key
+                support_keys = {
+                    evidence_by_id[item].experience_key
+                    for item in question.supporting_evidence_ids
+                    if item in evidence_by_id
+                }
+                if primary_key in support_keys:
+                    issues.append(
+                        ValidationIssue(
+                            code="PRIMARY_SUPPORT_SAME_EXPERIENCE",
+                            severity="hard_fail",
+                            message="주 경험과 보조 경험은 서로 다른 사건이어야 합니다.",
+                        )
+                    )
             supporting_plans = [
                 sentence
                 for sentence in answer.sentence_plans
@@ -216,6 +258,14 @@ def validate_answers(application: ApplicationInput, answers: list[DraftAnswer]) 
                         code="LEARNING_TRANSFER_MISSING",
                         severity="hard_fail",
                         message="후행 경험에서 배운 방식의 재적용을 근거로 증명해야 합니다.",
+                    )
+                )
+            elif len(supporting_plans) > 2:
+                issues.append(
+                    ValidationIssue(
+                        code="SUPPORTING_EVIDENCE_OVERUSED",
+                        severity="hard_fail",
+                        message="후행 경험은 1~2문장으로만 증명해야 합니다.",
                     )
                 )
             elif not any(
@@ -230,6 +280,18 @@ def validate_answers(application: ApplicationInput, answers: list[DraftAnswer]) 
                         message="후행 적용의 행동뿐 아니라 확인된 결과까지 연결해야 합니다.",
                     )
                 )
+
+    duplicate_primary = sorted(
+        key for key, count in Counter(primary_keys.values()).items() if count > 1
+    )
+    for key in duplicate_primary:
+        issues.append(
+            ValidationIssue(
+                code="DUPLICATE_PRIMARY_EXPERIENCE",
+                severity="hard_fail",
+                message=f"여러 문항의 주 소재가 중복되었습니다: {key}",
+            )
+        )
 
     role_counts = Counter(sentence.role for answer in answers for sentence in answer.sentence_plans)
     total = sum(role_counts.values()) or 1
@@ -273,7 +335,7 @@ def validate_answers(application: ApplicationInput, answers: list[DraftAnswer]) 
             issues.append(
                 ValidationIssue(
                     code=code,
-                    severity="hard_fail",
+                    severity="warning",
                     message=f"문장 구성비 {value:.1%}, 허용 범위 {lower:.0%}~{upper:.0%}",
                 )
             )

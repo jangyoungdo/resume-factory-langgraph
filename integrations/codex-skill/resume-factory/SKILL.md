@@ -13,13 +13,16 @@ Run the installed `rf` CLI; do not imitate the pipeline by writing a draft direc
 2. Run one command: `rf execute --application-id <id> --backend codex --mode balanced --output json`. Do not run Git, push, PR, CI, or a separate `rf doctor` in the application path.
 3. Verify the JSON summary and saved run:
    - `telemetry.provider` is `codex_cli`;
-   - `telemetry.graph_version` is `v0.6`;
-   - all seven graph nodes are present in `graph_nodes_completed`;
+   - `telemetry.graph_version` is `v0.7`;
+   - all eight graph nodes are present in `graph_nodes_completed`;
+   - every primary material has a distinct `experience_key`;
+   - every final answer has a passing or explicit unresolved editorial assessment;
    - Codex model calls are between the base budget and hard cap;
    - final validation status and per-question character counts are explicit.
 4. Open the generated Markdown in the Codex app and summarize QA, call count, token use, elapsed time, and character counts. Never submit an application.
 
 If the CLI reports `network_degraded`, preserve the checkpoint and use `rf resume <run-id>` only when the user asks to continue. If any other failure occurs, do not silently create a replacement cover letter.
+If it reports `blocked_insufficient_evidence`, do not draft around the gap; report the missing material traits.
 
 ## Privacy
 

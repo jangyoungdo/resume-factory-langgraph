@@ -34,8 +34,10 @@ from .schemas import (
     SubmissionBundle,
 )
 from .storage import RunStore
+from .targeted_repair import repair_question
 from .tracking import Tracker
 from .usage import GroupBy, build_feedback, compare_reports, usage_report
+from .validators import validate_answers
 
 app = typer.Typer(no_args_is_help=True, help="Evidence-grounded Resume Factory")
 usage_app = typer.Typer(no_args_is_help=True, help="Inspect local model token and cost usage")
@@ -121,7 +123,7 @@ def run(
     elif selected_backend == "openai":
         agent_backend = OpenAIBackend(settings)
     elif selected_backend == "codex":
-        cap = 12 + 4 * len(application_input.questions)
+        cap = 30
         codex_backend = CodexExecBackend(
             settings,
             max_concurrency=settings.codex_max_concurrency,
@@ -164,7 +166,7 @@ def resume(run_id: str) -> None:
     agent_backend = CodexExecBackend(
         settings,
         max_concurrency=settings.codex_max_concurrency,
-        hard_call_cap=12 + 4 * len(application_input.questions),
+        hard_call_cap=30,
         timeout_seconds=settings.codex_timeout_seconds,
     )
     asyncio.run(agent_backend.verify_chatgpt_auth())
@@ -180,6 +182,144 @@ def resume(run_id: str) -> None:
     )
     path = RunStore(settings.local_dir).save(result)
     console.print(f"resumed_from={run_id} run_id={result.run_id} saved={path}")
+
+
+@app.command("repair")
+def repair_command(
+    run_id: str,
+    question_id: Annotated[str, typer.Option()] = "Q1",
+    max_total_calls: Annotated[int, typer.Option(min=1)] = 30,
+    output: Annotated[str, typer.Option(help="text or json")] = "text",
+) -> None:
+    """Repair one failed question without rerunning completed graph teams."""
+    if output not in {"text", "json"}:
+        raise typer.BadParameter("output must be text or json")
+    settings = Settings.from_env()
+    store = RunStore(settings.local_dir)
+    parent = store.load(run_id)
+    input_path = settings.local_dir / "runs" / f"{run_id}.input.json"
+    if not input_path.exists():
+        raise typer.BadParameter(f"private input not found for run {run_id}")
+    application = ApplicationInput.model_validate_json(input_path.read_text(encoding="utf-8"))
+    existing_calls = int(
+        parent.telemetry.metadata.get(
+            "effective_total_calls",
+            len(parent.telemetry.model_calls),
+        )
+    )
+    remaining_calls = max_total_calls - existing_calls
+    if remaining_calls <= 0:
+        raise typer.BadParameter(
+            f"run already used {existing_calls} calls; max-total-calls={max_total_calls}"
+        )
+
+    try:
+        answer_index = next(
+            index
+            for index, answer in enumerate(parent.answers)
+            if answer.question_id == question_id
+        )
+        contract = next(
+            item for item in parent.question_contracts if item.question_id == question_id
+        )
+        transfer = next(
+            item for item in parent.transfer_contracts if item.question_id == question_id
+        )
+        evidence = next(
+            item for item in application.evidence if item.event_id == transfer.evidence_event_id
+        )
+    except StopIteration as error:
+        raise typer.BadParameter(f"question or evidence not found: {question_id}") from error
+
+    new_run_id = uuid.uuid4().hex[:12]
+    backend = CodexExecBackend(
+        settings,
+        max_concurrency=1,
+        hard_call_cap=remaining_calls,
+        timeout_seconds=settings.codex_timeout_seconds,
+    )
+    asyncio.run(backend.verify_chatgpt_auth())
+    backend.begin_run(new_run_id)
+    started_at = datetime.now(UTC)
+    started = time.perf_counter()
+    repaired, history = asyncio.run(
+        repair_question(
+            application,
+            parent.answers[answer_index],
+            contract,
+            transfer,
+            parent.positioning_brief,
+            evidence,
+            backend,
+            max_calls=remaining_calls,
+        )
+    )
+    completed_at = datetime.now(UTC)
+    elapsed_ms = int((time.perf_counter() - started) * 1000)
+
+    result = parent.model_copy(deep=True)
+    result.run_id = new_run_id
+    result.answers[answer_index] = repaired
+    result.validation = validate_answers(application, result.answers)
+    result.status = "validated" if result.validation.passed else "needs_review"
+    result.telemetry.run_id = new_run_id
+    result.telemetry.model_calls = backend.calls
+    result.telemetry.base_call_budget = 0
+    result.telemetry.optional_calls_used = len(backend.calls)
+    result.telemetry.hard_call_cap = max_total_calls
+    result.telemetry.command_started_at = started_at
+    result.telemetry.completed_at = completed_at
+    result.telemetry.wall_time_ms = elapsed_ms
+    result.telemetry.phase_spans = [
+        RunPhaseSpan(
+            phase="targeted_question_repair",
+            started_at=started_at,
+            completed_at=completed_at,
+            duration_ms=elapsed_ms,
+            detail=question_id,
+        )
+    ]
+    result.telemetry.network_status = (
+        "degraded"
+        if any(not call.success or call.retry_count for call in backend.calls)
+        else "healthy"
+    )
+    result.telemetry.metadata = {
+        **result.telemetry.metadata,
+        "parent_run_id": run_id,
+        "inherited_call_count": existing_calls,
+        "targeted_repair_question": question_id,
+        "targeted_repair_history": history,
+        "effective_total_calls": existing_calls + len(backend.calls),
+    }
+    new_input_path = settings.local_dir / "runs" / f"{new_run_id}.input.json"
+    new_input_path.write_text(application.model_dump_json(indent=2), encoding="utf-8")
+    store.save(result)
+
+    json_path: Path | None = None
+    markdown_path: Path | None = None
+    character_hard_fail = any(
+        issue.severity == "hard_fail" and issue.code.startswith("CHARACTER_")
+        for issue in result.validation.issues
+    )
+    if not character_hard_fail:
+        json_path, markdown_path = _create_deliverable(result, settings)
+
+    summary = {
+        "run_id": new_run_id,
+        "parent_run_id": run_id,
+        "question_id": question_id,
+        "status": result.status,
+        "new_calls": len(backend.calls),
+        "effective_total_calls": existing_calls + len(backend.calls),
+        "hard_call_cap": max_total_calls,
+        "character_count": repaired.character_count,
+        "repair_history": history,
+        "json": str(json_path) if json_path else None,
+        "markdown": str(markdown_path) if markdown_path else None,
+        "actual_submission_performed": False,
+    }
+    console.print_json(data=summary) if output == "json" else console.print(summary)
 
 
 @app.command()
@@ -283,7 +423,7 @@ def execute(
             selected = CodexExecBackend(
                 settings,
                 max_concurrency=settings.codex_max_concurrency,
-                hard_call_cap=40,
+                hard_call_cap=30,
                 timeout_seconds=settings.codex_timeout_seconds,
             )
             auth_at = datetime.now(UTC)
@@ -309,7 +449,7 @@ def execute(
 
         application = await load_application_from_mcp(application_id, external_spans)
         if isinstance(selected, CodexExecBackend):
-            selected.hard_call_cap = 12 + 4 * len(application.questions)
+            selected.hard_call_cap = 30
         input_path = settings.local_dir / "runs" / f"{run_id}.input.json"
         input_path.parent.mkdir(parents=True, exist_ok=True)
         input_path.write_text(application.model_dump_json(indent=2), encoding="utf-8")
@@ -356,7 +496,11 @@ def execute(
     delivery_started = time.perf_counter()
     store = RunStore(settings.local_dir)
     store.save(result)
-    json_path, markdown_path = _create_deliverable(result, settings)
+    if result.status == "blocked_insufficient_evidence":
+        json_path = settings.local_dir / "runs" / f"{result.run_id}.json"
+        markdown_path = None
+    else:
+        json_path, markdown_path = _create_deliverable(result, settings)
     result.telemetry.phase_spans.append(
         RunPhaseSpan(
             phase="delivery",
@@ -384,9 +528,15 @@ def execute(
         "critical_path_ms": result.telemetry.wall_time_ms,
         "network_status": result.telemetry.network_status,
         "json": str(json_path),
-        "markdown": str(markdown_path),
+        "markdown": str(markdown_path) if markdown_path else None,
         "character_counts": {
             answer.question_id: answer.character_count for answer in result.answers
+        },
+        "material_plan": (
+            result.material_plan.model_dump(mode="json") if result.material_plan else None
+        ),
+        "editorial_verdicts": {
+            item.question_id: item.verdict for item in result.editorial_assessments
         },
         "git_invoked": False,
         "actual_submission_performed": False,
@@ -432,12 +582,12 @@ def performance_show(
 def performance_summary(
     limit: Annotated[int, typer.Option(min=1, max=100)] = 10,
 ) -> None:
-    """Summarize the latest healthy v0.6 runs and the 30-minute SLO."""
+    """Summarize the latest healthy v0.7 runs and the 30-minute SLO."""
     rows = RunStore(Settings.from_env().local_dir).list_usage_runs(100)
     durations = [
         int(cast(int, row["wall_time_ms"]))
         for row in rows
-        if row.get("graph_version") == "v0.6"
+        if row.get("graph_version") == "v0.7"
         and row.get("provider") == "codex_cli"
         and row.get("network_status") == "healthy"
         and row.get("wall_time_ms") is not None

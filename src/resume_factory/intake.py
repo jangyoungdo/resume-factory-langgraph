@@ -7,7 +7,12 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 
 from .mcp.client import open_tools_persistent
-from .schemas import ApplicationInput, EvidencePacket, RunPhaseSpan
+from .schemas import (
+    ApplicationInput,
+    EvidencePacket,
+    MaterialSelectionMode,
+    RunPhaseSpan,
+)
 
 
 class IntakeError(RuntimeError):
@@ -22,9 +27,10 @@ async def load_application_from_mcp(
     startup_at = datetime.now(UTC)
     startup = time.perf_counter()
     startup_metrics: list[dict[str, Any]] = []
-    async with open_tools_persistent(
-        timeout_seconds=15, startup_metrics=startup_metrics
-    ) as (tools, health):
+    async with open_tools_persistent(timeout_seconds=15, startup_metrics=startup_metrics) as (
+        tools,
+        health,
+    ):
         failed = [name for name, status in health.items() if status != "healthy"]
         spans.append(
             RunPhaseSpan(
@@ -59,12 +65,20 @@ async def load_application_from_mcp(
             try:
                 result = await tool.ainvoke(arguments)
                 if isinstance(result, list) and result:
-                    block = result[0]
-                    if isinstance(block, dict) and isinstance(block.get("text"), str):
+                    parsed_result = None
+                    for block in result:
+                        if not isinstance(block, dict) or not isinstance(block.get("text"), str):
+                            continue
                         try:
-                            result = json.loads(block["text"])
-                        except json.JSONDecodeError as error:
-                            raise IntakeError(f"MCP {suffix} returned invalid JSON") from error
+                            candidate = json.loads(block["text"])
+                        except json.JSONDecodeError:
+                            continue
+                        if isinstance(candidate, dict):
+                            parsed_result = candidate
+                            break
+                    if parsed_result is None:
+                        raise IntakeError(f"MCP {suffix} returned invalid JSON")
+                    result = parsed_result
                 if not isinstance(result, dict) or result.get("error"):
                     raise IntakeError(f"MCP {suffix} failed: {result}")
                 return result
@@ -93,37 +107,62 @@ async def load_application_from_mcp(
                 invoke("get_existing_draft", {"application_id": application_id}),
             )
             questions = question_result.get("questions") or []
-            mapping = application.get("evidence_ids_by_question") or {}
+            legacy_mapping = application.get("evidence_ids_by_question") or {}
+            material_selection = application.get("material_selection") or {}
+            if isinstance(material_selection, str):
+                material_selection = {"mode": material_selection}
+            selection_mode = MaterialSelectionMode(
+                material_selection.get("mode", MaterialSelectionMode.PINNED)
+            )
+            pinned_mapping = (
+                material_selection.get("pinned_evidence_ids_by_question") or legacy_mapping
+            )
+            preferred_mapping = (
+                material_selection.get("preferred_evidence_ids_by_question")
+                or application.get("preferred_evidence_ids_by_question")
+                or (legacy_mapping if selection_mode is MaterialSelectionMode.AUTO_UNIQUE else {})
+            )
             supporting_mapping = application.get("supporting_evidence_ids_by_question") or {}
             for question in questions:
                 question_id = str(question["question_id"])
                 question["supporting_evidence_ids"] = [
                     str(item) for item in supporting_mapping.get(question_id, [])
                 ]
-            await asyncio.gather(
+            search_results = await asyncio.gather(
                 *(
                     invoke(
                         "search_evidence",
                         {
                             "query": (
-                                f"{jd.get('company')} {jd.get('job')} "
-                                f"{question.get('text', '')}"
+                                f"{jd.get('company')} {jd.get('job')} {question.get('text', '')}"
                             ),
                             "capabilities": application.get("search_capabilities", []),
-                            "top_k": 5,
+                            "top_k": 8,
                         },
                     )
                     for question in questions
                 )
             )
-            requested_ids = []
+            requested_ids: list[str] = []
             for question in questions:
                 question_id = str(question["question_id"])
-                event_id = mapping.get(question_id)
-                if not event_id:
-                    raise IntakeError(f"no approved evidence ID for {question_id}")
-                requested_ids.append(str(event_id))
+                event_id = (
+                    pinned_mapping.get(question_id)
+                    if selection_mode is MaterialSelectionMode.PINNED
+                    else preferred_mapping.get(question_id)
+                )
+                if selection_mode is MaterialSelectionMode.PINNED and not event_id:
+                    raise IntakeError(f"no pinned evidence ID for {question_id}")
+                if event_id:
+                    requested_ids.append(str(event_id))
                 requested_ids.extend(question["supporting_evidence_ids"])
+            if selection_mode is MaterialSelectionMode.AUTO_UNIQUE:
+                requested_ids.extend(
+                    str(item["event_id"])
+                    for result in search_results
+                    for item in result.get("results", [])
+                    if item.get("event_id")
+                )
 
             async def load_evidence(event_id: str) -> EvidencePacket:
                 raw, boundary = await asyncio.gather(
@@ -132,6 +171,10 @@ async def load_application_from_mcp(
                 )
                 raw["boundaries"] = boundary.get("boundaries", [])
                 raw["forbidden_combinations"] = boundary.get("forbidden_combinations", [])
+                if selection_mode is MaterialSelectionMode.AUTO_UNIQUE and not raw.get(
+                    "experience_key"
+                ):
+                    raise IntakeError(f"missing experience_key for auto allocation: {event_id}")
                 authorities = {
                     str(item["authority_id"]): item for item in raw.get("numeric_authorities", [])
                 }
@@ -182,4 +225,11 @@ async def load_application_from_mcp(
                 str(item.get("feedback", item)) for item in feedback.get("results", [])
             ]
             + [str(item) for item in application.get("previous_outcomes", [])],
+            material_selection_mode=selection_mode,
+            pinned_evidence_ids_by_question={
+                str(key): str(value) for key, value in pinned_mapping.items()
+            },
+            preferred_evidence_ids_by_question={
+                str(key): str(value) for key, value in preferred_mapping.items()
+            },
         )

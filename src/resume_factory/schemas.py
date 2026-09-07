@@ -26,6 +26,8 @@ class CallKind(StrEnum):
     LEAD = "lead"
     ADJUDICATOR = "adjudicator"
     CHARACTER_REWRITE = "character_rewrite"
+    SEMANTIC_CRITIC = "semantic_critic"
+    SEMANTIC_REPAIR = "semantic_repair"
 
 
 class UsageStatus(StrEnum):
@@ -72,6 +74,21 @@ class SentenceRole(StrEnum):
     TRANSFER = "transfer"
     BOUNDARY = "boundary"
     CAUSAL_BRIDGE = "causal_bridge"
+
+
+class QuestionArchetype(StrEnum):
+    COMPETENCY_EFFORT = "competency_effort"
+    TEAMWORK_ROLE = "teamwork_role"
+    CONTRIBUTION_TRANSFER = "contribution_transfer"
+    LEARNING_TRANSFER = "learning_transfer"
+    MOTIVATION_FIT = "motivation_fit"
+    GROWTH_VALUES = "growth_values"
+    FREEFORM = "freeform"
+
+
+class MaterialSelectionMode(StrEnum):
+    AUTO_UNIQUE = "auto_unique"
+    PINNED = "pinned"
 
 
 class SentencePlan(BaseModel):
@@ -121,6 +138,9 @@ class NumericAuthority(BaseModel):
 
 class EvidencePacket(BaseModel):
     event_id: str
+    # Legacy artifacts fall back to event_id. New auto-unique intake requires an
+    # explicit immutable key and validates it before any model call.
+    experience_key: str = ""
     title: str
     problem: str
     judgment: str
@@ -146,6 +166,9 @@ class ApplicationInput(BaseModel):
     eligibility_notes: list[str] = Field(default_factory=list)
     existing_draft: str | None = None
     previous_outcomes: list[str] = Field(default_factory=list)
+    material_selection_mode: MaterialSelectionMode = MaterialSelectionMode.PINNED
+    pinned_evidence_ids_by_question: dict[str, str] = Field(default_factory=dict)
+    preferred_evidence_ids_by_question: dict[str, str] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def require_questions_and_evidence(self) -> ApplicationInput:
@@ -164,6 +187,9 @@ class ApplicationInput(BaseModel):
             raise ValueError(
                 "unknown supporting evidence IDs: " + ", ".join(sorted(missing_support))
             )
+        for evidence in self.evidence:
+            if not evidence.experience_key:
+                evidence.experience_key = evidence.event_id
         return self
 
 
@@ -202,6 +228,7 @@ class AgentProposal(BaseModel):
     needs_escalation: bool = False
     draft: DraftProposal | None = None
     drafts: list[DraftProposal] = Field(default_factory=list)
+    structured_payload: AgentStructuredPayload | None = None
 
 
 class CritiqueReport(BaseModel):
@@ -221,6 +248,7 @@ class TeamDecision(BaseModel):
     evidence_ids: list[str] = Field(default_factory=list)
     escalated_to: ModelTier | None = None
     selected_draft: DraftProposal | None = None
+    structured_payload: AgentStructuredPayload | None = None
 
 
 class DemandBrief(BaseModel):
@@ -257,6 +285,101 @@ class QuestionContract(BaseModel):
         self.character_target_min = self.character_target_min or math.ceil(limit * 0.97)
         self.character_target_max = self.character_target_max or math.floor(limit * 0.98)
         return self
+
+
+class QuestionNarrativeContract(QuestionContract):
+    archetype: QuestionArchetype = QuestionArchetype.FREEFORM
+    direct_answer: str = ""
+    core_message: str = ""
+    required_elements: list[str] = Field(default_factory=list)
+    optional_elements: list[str] = Field(default_factory=list)
+    forbidden_detours: list[str] = Field(default_factory=list)
+    preferred_evidence_traits: list[str] = Field(default_factory=list)
+    narrative_sequence: list[str] = Field(default_factory=list)
+
+
+class MaterialAssignment(BaseModel):
+    question_id: str
+    primary_event_id: str
+    primary_experience_key: str
+    supporting_event_id: str | None = None
+    allocation_score: float = Field(ge=0, le=5)
+    selection_reason: str
+    rejected_candidates: list[str] = Field(default_factory=list)
+
+
+class MaterialPortfolioPlan(BaseModel):
+    assignments: list[MaterialAssignment] = Field(default_factory=list)
+    unassigned_questions: list[str] = Field(default_factory=list)
+    duplicate_experience_keys: list[str] = Field(default_factory=list)
+    status: Literal["ready", "blocked_insufficient_evidence"] = "ready"
+    code: str | None = None
+    missing_questions: list[str] = Field(default_factory=list)
+    required_evidence_traits: dict[str, list[str]] = Field(default_factory=dict)
+    searched_candidate_count: int = 0
+
+
+class EditorialAssessment(BaseModel):
+    question_id: str
+    inferred_takeaway: str
+    question_directness: int = Field(ge=1, le=5)
+    thesis_clarity: int = Field(ge=1, le=5)
+    logical_continuity: int = Field(ge=1, le=5)
+    evidence_to_claim: int = Field(ge=1, le=5)
+    effort_or_action_specificity: int = Field(ge=1, le=5)
+    company_transfer: int = Field(ge=1, le=5)
+    redundant_sentence_ids: list[str] = Field(default_factory=list)
+    low_value_sentence_ids: list[str] = Field(default_factory=list)
+    logical_gap_after_sentence_ids: list[str] = Field(default_factory=list)
+    excessive_technical_detail_ids: list[str] = Field(default_factory=list)
+    missing_information: list[str] = Field(default_factory=list)
+    verdict: Literal["pass", "repair", "replan"]
+
+    @property
+    def passed(self) -> bool:
+        scores = (
+            self.question_directness,
+            self.thesis_clarity,
+            self.logical_continuity,
+            self.evidence_to_claim,
+            self.effort_or_action_specificity,
+            self.company_transfer,
+        )
+        issue_ids = (
+            self.redundant_sentence_ids
+            + self.low_value_sentence_ids
+            + self.logical_gap_after_sentence_ids
+            + self.excessive_technical_detail_ids
+        )
+        return (
+            self.verdict == "pass"
+            and min(scores) >= 4
+            and not issue_ids
+            and not self.missing_information
+        )
+
+
+class EditOperation(BaseModel):
+    operation: Literal[
+        "replace_sentence",
+        "delete_sentence",
+        "insert_after",
+        "merge_sentences",
+        "reorder_span",
+    ]
+    target_sentence_ids: list[str] = Field(min_length=1)
+    text: str | None = None
+    role: SentenceRole | None = None
+    selling_point: str | None = None
+    evidence_event_id: str | None = None
+    company_connection: str | None = None
+
+
+class AgentStructuredPayload(BaseModel):
+    demand_brief: DemandBrief | None = None
+    question_narratives: list[QuestionNarrativeContract] = Field(default_factory=list)
+    editorial_assessment: EditorialAssessment | None = None
+    edit_operations: list[EditOperation] = Field(default_factory=list)
 
 
 class TransferContract(BaseModel):
@@ -404,10 +527,16 @@ class RunTelemetry(BaseModel):
 
 class RunResult(BaseModel):
     run_id: str
-    status: Literal["validated", "needs_review", "failed", "network_degraded"]
+    status: Literal[
+        "validated",
+        "needs_review",
+        "failed",
+        "network_degraded",
+        "blocked_insufficient_evidence",
+    ]
     input_summary: dict[str, str]
     demand_brief: DemandBrief
-    question_contracts: list[QuestionContract]
+    question_contracts: list[QuestionNarrativeContract]
     transfer_contracts: list[TransferContract]
     positioning_brief: PositioningBrief
     answers: list[DraftAnswer]
@@ -415,6 +544,8 @@ class RunResult(BaseModel):
     team_decisions: list[TeamDecision]
     eligibility_warnings: list[str]
     telemetry: RunTelemetry
+    material_plan: MaterialPortfolioPlan | None = None
+    editorial_assessments: list[EditorialAssessment] = Field(default_factory=list)
 
 
 class SubmissionAnswer(BaseModel):
@@ -464,3 +595,7 @@ class HumanFeedback(BaseModel):
     overall_edit_ratio: float | None = Field(default=None, ge=0, le=1)
     per_question_edit_ratio: dict[str, float] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+AgentProposal.model_rebuild()
+TeamDecision.model_rebuild()
