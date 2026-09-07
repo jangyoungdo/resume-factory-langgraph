@@ -3,8 +3,7 @@ from pathlib import Path
 from resume_factory.agents import DeterministicBackend
 from resume_factory.graph import run_resume_graph
 from resume_factory.schemas import ApplicationInput, ExecutionMode
-from resume_factory.validators import NUMBER_RE
-from resume_factory.validators import validate_answers
+from resume_factory.validators import NUMBER_RE, validate_answers
 
 FIXTURE = Path(__file__).parent / "fixtures" / "sample_application.json"
 
