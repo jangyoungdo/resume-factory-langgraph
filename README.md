@@ -40,8 +40,13 @@ rf index --source <private-evidence-directory>
 rf run --input <private-application-snapshot.json> [--offline]
 rf review <run-id>
 rf render-draft --input <private-submission.json> --output <new-private-draft.md>
+rf usage list
+rf usage show <run-id> --group-by question
+rf usage compare <run-a> <run-b> --group-by model
+rf feedback <run-id> --decision revised --rating 4 --final-draft <private-final.json>
 rf eval --suite golden
 rf diagram
 ```
 
-아키텍처와 운영 결정은 `docs/`를 참고하십시오.
+토큰·비용·사용자 수정률 모니터링은 `docs/LLMOPS.md`, 아키텍처와 운영 결정은 `docs/`를
+참고하십시오.
