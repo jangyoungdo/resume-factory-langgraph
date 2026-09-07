@@ -17,6 +17,8 @@ async def test_full_graph_runs_offline_and_is_grounded() -> None:
     assert len(result.team_decisions) == 14
     assert any(call.agent_role.endswith("_anonymous_critic") for call in backend.calls)
     assert any(call.agent_role == "brand_director" for call in backend.calls)
+    assert 582 <= result.answers[0].character_count <= 588
+    assert result.telemetry.metadata["character_rewrite_attempts"] == ["Q1"]
 
 
 async def test_economy_mode_uses_fewer_agents() -> None:

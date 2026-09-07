@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from resume_factory.schemas import AgentScore, ApplicationInput
+from resume_factory.schemas import AgentScore, ApplicationInput, DraftAnswer
 
 FIXTURE = Path(__file__).parent / "fixtures" / "sample_application.json"
 
@@ -30,3 +30,17 @@ def test_application_requires_evidence() -> None:
     payload["evidence"] = []
     with pytest.raises(ValueError, match="evidence"):
         ApplicationInput.model_validate(payload)
+
+
+def test_submission_text_counts_headline_and_one_newline() -> None:
+    answer = DraftAnswer(
+        question_id="Q1",
+        headline=" [제목]\r\n ",
+        body=" 본문\r\n내용 ",
+        sentence_plans=[],
+        evidence_ids=[],
+        character_limit=20,
+    )
+    assert answer.submission_text == "[제목]\n본문\n내용"
+    assert answer.character_count == len("[제목]\n본문\n내용")
+    assert answer.utilization_ratio == round(answer.character_count / 20, 4)

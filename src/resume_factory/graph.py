@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import uuid
 from typing import Annotated, Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
 from .agents import AgentBackend
+from .character_budget import rewrite_to_character_target
 from .schemas import (
     ApplicationInput,
     DemandBrief,
@@ -38,6 +40,7 @@ class ResumeGraphState(TypedDict, total=False):
     transfer_contracts: list[TransferContract]
     positioning_brief: PositioningBrief
     answers: list[DraftAnswer]
+    character_rewrite_attempts: list[str]
     team_decisions: Annotated[list[TeamDecision], _append]
     validation: Any
 
@@ -91,6 +94,10 @@ def build_graph(backend: AgentBackend) -> Any:
                 likely_objections=["프로젝트 경험과 실제 현장의 차이는 무엇인가?"],
                 forbidden_generic_claims=["열정으로 기여하겠습니다", "최선을 다하겠습니다"],
                 character_budget=question.character_limit,
+                character_limit=question.character_limit,
+                character_hard_min=math.ceil(question.character_limit * 0.95),
+                character_target_min=math.ceil(question.character_limit * 0.97),
+                character_target_max=math.floor(question.character_limit * 0.98),
             )
             for question in app.questions
         ]
@@ -180,7 +187,13 @@ def build_graph(backend: AgentBackend) -> Any:
                 *(run_team(team, backend, brief, state["mode"]) for team in BLOCK_TEAMS.values())
             )
             decisions = [item[0] for item in results]
-            answer = _compose_grounded_answer(question.question_id, app, selected, transfer)
+            answer = _compose_grounded_answer(
+                question.question_id,
+                app,
+                selected,
+                transfer,
+                question.character_limit,
+            )
             return answer, decisions
 
         drafted = await asyncio.gather(*(draft_question(i) for i in range(len(app.questions))))
@@ -203,6 +216,28 @@ def build_graph(backend: AgentBackend) -> Any:
             state["mode"],
         )
         return {"team_decisions": [decision]}
+
+    async def character_budget_gate(state: ResumeGraphState) -> dict[str, Any]:
+        app = state["application"]
+        evidence_by_id = {item.event_id: item for item in app.evidence}
+        transfer_by_question = {
+            item.question_id: item for item in state["transfer_contracts"]
+        }
+        rewritten: list[DraftAnswer] = []
+        attempted: list[str] = []
+        for answer in state["answers"]:
+            transfer = transfer_by_question[answer.question_id]
+            evidence = evidence_by_id[transfer.evidence_event_id]
+            updated, did_attempt = rewrite_to_character_target(
+                answer, app, evidence, transfer
+            )
+            rewritten.append(updated)
+            if did_attempt:
+                attempted.append(answer.question_id)
+        return {
+            "answers": rewritten,
+            "character_rewrite_attempts": attempted,
+        }
 
     async def validate(state: ResumeGraphState) -> dict[str, Any]:
         app = state["application"]
@@ -227,6 +262,7 @@ def build_graph(backend: AgentBackend) -> Any:
     builder.add_node("self_branding", branding)
     builder.add_node("parallel_block_factory", draft)
     builder.add_node("integration", integrate)
+    builder.add_node("character_budget_gate", character_budget_gate)
     builder.add_node("qa_council", validate)
     builder.add_edge(START, "company_job_intelligence")
     builder.add_edge("company_job_intelligence", "question_strategy")
@@ -234,7 +270,8 @@ def build_graph(backend: AgentBackend) -> Any:
     builder.add_edge("evidence_matching", "self_branding")
     builder.add_edge("self_branding", "parallel_block_factory")
     builder.add_edge("parallel_block_factory", "integration")
-    builder.add_edge("integration", "qa_council")
+    builder.add_edge("integration", "character_budget_gate")
+    builder.add_edge("character_budget_gate", "qa_council")
     builder.add_edge("qa_council", END)
     return builder.compile()
 
@@ -276,6 +313,7 @@ async def run_resume_graph(
         model_calls=calls,
         total_cost_usd=round(sum(call.estimated_cost_usd for call in calls), 6),
         prompt_versions={"core": "v0.1.0"},
+        metadata={"character_rewrite_attempts": state.get("character_rewrite_attempts", [])},
     )
     validation = state["validation"]
     return RunResult(
@@ -299,6 +337,7 @@ def _compose_grounded_answer(
     app: ApplicationInput,
     evidence: EvidencePacket,
     transfer: TransferContract,
+    character_limit: int,
 ) -> DraftAnswer:
     sentences = [
         (
@@ -383,6 +422,7 @@ def _compose_grounded_answer(
         body=" ".join(item.text for item in plans),
         sentence_plans=plans,
         evidence_ids=[evidence.event_id],
+        character_limit=character_limit,
     )
 
 
