@@ -8,7 +8,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send
 
 from .agents import AgentBackend, AgentSpec
-from .schemas import AgentProposal, ExecutionMode, ModelTier, TeamDecision
+from .schemas import AgentProposal, CallKind, ExecutionMode, ModelTier, TeamDecision
 
 
 @dataclass(frozen=True)
@@ -215,6 +215,12 @@ async def _run_specialist(state: TeamRunState) -> dict[str, Any]:
         team=state["definition"].name,
         brief={**state["brief"], "focus": spec.focus},
         tier=spec.tier,
+        question_id=(
+            str(state["brief"]["question_id"])
+            if state["brief"].get("question_id")
+            else None
+        ),
+        call_kind=CallKind.SPECIALIST,
     )
     return {"proposals": [proposal]}
 
@@ -243,6 +249,8 @@ async def _finalize_team(state: TeamRunState) -> dict[str, Any]:
         team=definition.name,
         brief={**brief, "anonymous_candidates": anonymous_candidates},
         tier=ModelTier.LUNA,
+        question_id=(str(brief["question_id"]) if brief.get("question_id") else None),
+        call_kind=CallKind.CRITIC,
     )
     lead = await backend.propose(
         role=definition.lead_role,
@@ -253,6 +261,8 @@ async def _finalize_team(state: TeamRunState) -> dict[str, Any]:
             "critic": critic.model_dump(),
         },
         tier=definition.lead_tier,
+        question_id=(str(brief["question_id"]) if brief.get("question_id") else None),
+        call_kind=CallKind.LEAD,
     )
     needs_sol = (
         mode is not ExecutionMode.ECONOMY
@@ -271,6 +281,8 @@ async def _finalize_team(state: TeamRunState) -> dict[str, Any]:
                 "lead": lead.model_dump(),
             },
             tier=ModelTier.SOL,
+            question_id=(str(brief["question_id"]) if brief.get("question_id") else None),
+            call_kind=CallKind.ADJUDICATOR,
         )
     return {
         "decision": TeamDecision(

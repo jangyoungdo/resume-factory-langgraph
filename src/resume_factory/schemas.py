@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Literal
 
@@ -17,6 +18,27 @@ class ModelTier(StrEnum):
     LUNA = "luna"
     TERRA = "terra"
     SOL = "sol"
+
+
+class CallKind(StrEnum):
+    SPECIALIST = "specialist"
+    CRITIC = "critic"
+    LEAD = "lead"
+    ADJUDICATOR = "adjudicator"
+    CHARACTER_REWRITE = "character_rewrite"
+
+
+class UsageStatus(StrEnum):
+    REPORTED = "reported"
+    OFFLINE = "offline"
+    MISSING = "missing"
+    LEGACY = "legacy"
+
+
+class FeedbackDecision(StrEnum):
+    ACCEPTED = "accepted"
+    REVISED = "revised"
+    REJECTED = "rejected"
 
 
 class SentenceRole(StrEnum):
@@ -247,14 +269,35 @@ class ValidationReport(BaseModel):
 
 
 class ModelCallRecord(BaseModel):
+    run_id: str = "legacy"
+    call_id: str = "legacy"
+    sequence: int = 0
+    question_id: str | None = None
+    team: str = "legacy"
     agent_role: str
+    call_kind: CallKind = CallKind.SPECIALIST
     tier: ModelTier
     model: str
     input_tokens: int
+    cached_input_tokens: int = 0
+    cache_creation_input_tokens: int = 0
     output_tokens: int
-    estimated_cost_usd: float
+    reasoning_tokens: int = 0
+    total_tokens: int = 0
+    estimated_cost_usd: float | None = None
+    price_catalog_version: str | None = None
     latency_ms: int
-    retry_count: int = 0
+    retry_count: int | None = None
+    usage_status: UsageStatus = UsageStatus.LEGACY
+    success: bool = True
+    error_code: str | None = None
+    started_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    @model_validator(mode="after")
+    def populate_legacy_total_tokens(self) -> ModelCallRecord:
+        if self.total_tokens == 0 and self.input_tokens + self.output_tokens > 0:
+            self.total_tokens = self.input_tokens + self.output_tokens
+        return self
 
 
 class RunTelemetry(BaseModel):
@@ -263,6 +306,8 @@ class RunTelemetry(BaseModel):
     model_calls: list[ModelCallRecord] = Field(default_factory=list)
     prompt_versions: dict[str, str] = Field(default_factory=dict)
     total_cost_usd: float = 0
+    cost_complete: bool = True
+    price_catalog_version: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -317,3 +362,14 @@ class SubmissionBundle(BaseModel):
     answers: list[SubmissionAnswer]
     eligibility_warnings: list[str] = Field(default_factory=list)
     actual_submission_performed: bool = False
+
+
+class HumanFeedback(BaseModel):
+    run_id: str
+    decision: FeedbackDecision
+    rating: int = Field(ge=1, le=5)
+    final_draft_path: str | None = None
+    final_draft_hash: str | None = None
+    overall_edit_ratio: float | None = Field(default=None, ge=0, le=1)
+    per_question_edit_ratio: dict[str, float] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
