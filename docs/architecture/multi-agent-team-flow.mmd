@@ -1,0 +1,59 @@
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#EAF2FF","primaryTextColor":"#082B5C","primaryBorderColor":"#1F5EA8","lineColor":"#4776A8","secondaryColor":"#D9E8FA","tertiaryColor":"#F6F9FD","fontFamily":"Pretendard, Apple SD Gothic Neo, sans-serif"},"flowchart":{"curve":"basis","nodeSpacing":25,"rankSpacing":34}}}%%
+flowchart LR
+    subgraph INPUT["1 · Prepare"]
+      direction TB
+      BRIEF["팀 브리프<br/>허용 근거 · 토큰 예산 · 평가표"]
+      DISPATCH{"LangGraph Send<br/>병렬 배정"}
+      BRIEF --> DISPATCH
+    end
+
+    subgraph BLIND["2 · Blind specialists"]
+      direction TB
+      A["전문가 A · Luna"]
+      B["전문가 B · Luna"]
+      C["전문가 C · Terra"]
+    end
+
+    subgraph REVIEW["3 · Anonymous review"]
+      direction TB
+      NORMALIZE["AgentProposal<br/>구조화 · 익명화"]
+      RULES["결정론 검사<br/>근거 · 수치 · 사건 분리"]
+      CRITIC["익명 반론 · Luna"]
+      LEAD["팀장 결정 · Terra"]
+      NORMALIZE --> RULES --> CRITIC --> LEAD
+    end
+
+    subgraph DECISION["4 · Bounded decision"]
+      direction TB
+      GATE{"신뢰도 게이트"}
+      ACCEPT["PASS · TeamDecision"]
+      RETRY["부분 실패 · 1회 재작업"]
+      SOL["점수 충돌 · Sol 1회"]
+      HUMAN["2회 실패 · 사용자 검토"]
+      TRACE["SQLite · MLflow<br/>근거 · 토큰 · 선택 이유"]
+      GATE --> ACCEPT --> TRACE
+      GATE --> RETRY --> TRACE
+      GATE --> SOL --> TRACE
+      GATE --> HUMAN --> TRACE
+    end
+
+    DISPATCH --> A
+    DISPATCH --> B
+    DISPATCH --> C
+    A --> NORMALIZE
+    B --> NORMALIZE
+    C --> NORMALIZE
+    LEAD --> GATE
+    RETRY -. "해당 블록만 재검사" .-> RULES
+
+    classDef luna fill:#EAF2FF,color:#082B5C,stroke:#4A78AD;
+    classDef terra fill:#DCE9F7,color:#082B5C,stroke:#164D86,stroke-width:2px;
+    classDef sol fill:#F4E8FF,color:#4C176B,stroke:#8C50B0,stroke-width:2px;
+    classDef human fill:#FFF4CC,color:#5B4300,stroke:#D7A400,stroke-width:2px;
+    classDef gate fill:#E7F7EE,color:#134E2A,stroke:#2D8B57,stroke-width:2px;
+    class A,B,CRITIC luna;
+    class C,LEAD terra;
+    class SOL sol;
+    class HUMAN human;
+    class GATE,ACCEPT gate;
+

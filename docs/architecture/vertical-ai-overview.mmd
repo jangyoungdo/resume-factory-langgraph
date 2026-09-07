@@ -1,0 +1,41 @@
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#EAF2FF","primaryTextColor":"#082B5C","primaryBorderColor":"#1F5EA8","lineColor":"#4776A8","secondaryColor":"#D9E8FA","tertiaryColor":"#F6F9FD","fontFamily":"Pretendard, Apple SD Gothic Neo, sans-serif"},"flowchart":{"curve":"basis","nodeSpacing":30,"rankSpacing":38}}}%%
+flowchart TB
+    subgraph DATA["Data Layer · Private & Read-only"]
+      direction LR
+      NOTION["Notion · 채용공고"] --> NMCP["Notion Intake MCP"]
+      BRAIN["Dual Brain · 검증된 경험"] --> DMCP["Dual Brain MCP"]
+      BRAIN --> BGE["BGE-M3 로컬 검색"]
+      DMCP --> LINEAGE["Evidence ID · 수치 원본 · 기여 경계"]
+    end
+
+    subgraph ORCH["Management & Orchestration Layer"]
+      direction LR
+      LG["LangGraph 총괄 오케스트레이터"] --> ROUTER["모델 라우터<br/>Economy · Balanced · Premium"]
+      ROUTER --> STATE["SQLite Checkpoint · Human-in-the-loop"]
+    end
+
+    subgraph SERVICE["AI Service Layer · Domain Multi-Agent Teams"]
+      direction LR
+      INTEL["회사·직무"] --> QUESTION["질문 전략"] --> EVIDENCE["경험·증거"]
+      EVIDENCE --> BRAND["셀프 브랜딩"] --> WRITE["PREP · SOARA"] --> QA["QA 위원회"]
+    end
+
+    subgraph UI["UI / UX Layer"]
+      direction LR
+      CLI["CLI · run / review / eval"] --> REPORT["근거 · 경고 · 비용 리포트"]
+      REPORT --> HUMAN["사용자 승인 · 수정 · 피드백"]
+    end
+
+    subgraph INFRA["AI Infrastructure & LLMOps Layer"]
+      direction LR
+      MODELS["Luna · Terra · 조건부 Sol"] --> MLFLOW["MLflow · 프롬프트 / 비용 / 품질"]
+      MLFLOW --> CI["GitHub · CI · 골든 회귀"] --> PRIVACY["개인정보 로컬 격리"]
+    end
+
+    DATA --> ORCH --> SERVICE --> UI --> INFRA
+
+    classDef human fill:#FFF4CC,color:#5B4300,stroke:#D7A400,stroke-width:2px;
+    classDef gate fill:#E7F7EE,color:#134E2A,stroke:#2D8B57,stroke-width:2px;
+    class HUMAN human;
+    class QA gate;
+
