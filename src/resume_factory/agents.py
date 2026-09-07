@@ -16,9 +16,16 @@ from .pricing import PriceCatalog
 from .schemas import (
     AgentProposal,
     AgentScore,
+    BackendProvider,
+    BillingMode,
     CallKind,
+    CostStatus,
+    DraftProposal,
     ModelCallRecord,
     ModelTier,
+    PrepSoaraStructure,
+    SentencePlan,
+    SentenceRole,
     UsageStatus,
 )
 
@@ -26,6 +33,9 @@ from .schemas import (
 class AgentBackend(Protocol):
     calls: list[ModelCallRecord]
     price_catalog_version: str
+    provider: BackendProvider
+    billing_mode: BillingMode
+    cost_status: CostStatus
 
     def begin_run(self, run_id: str) -> None: ...
 
@@ -64,6 +74,10 @@ class DeterministicBackend:
     It deliberately produces traceable, conservative text instead of pretending to
     reproduce model quality. Every proposal is grounded in IDs supplied in the brief.
     """
+
+    provider = BackendProvider.LOCAL
+    billing_mode = BillingMode.OFFLINE
+    cost_status = CostStatus.NOT_APPLICABLE
 
     def __init__(self) -> None:
         self.calls: list[ModelCallRecord] = []
@@ -146,6 +160,11 @@ class DeterministicBackend:
                 usage_status=UsageStatus.OFFLINE,
             )
         )
+        draft = _deterministic_draft(brief) if brief.get("writing_contract") else None
+        integrated = []
+        if role == "integration_editor":
+            for raw in brief.get("drafts", []):
+                integrated.append(DraftProposal.model_validate(raw))
         return AgentProposal(
             agent_role=role,
             proposal_id=f"{team}-{uuid.uuid4().hex[:8]}",
@@ -156,10 +175,16 @@ class DeterministicBackend:
             score=score,
             confidence=0.88 if evidence_ids else 0.65,
             needs_escalation=not evidence_ids,
+            draft=draft,
+            drafts=integrated,
         )
 
 
 class OpenAIBackend:
+    provider = BackendProvider.OPENAI_API
+    billing_mode = BillingMode.API
+    cost_status = CostStatus.ESTIMATED
+
     def __init__(self, settings: Settings) -> None:
         if not settings.openai_api_key:
             raise ValueError("OPENAI_API_KEY is required for online execution")
@@ -246,6 +271,9 @@ class OpenAIBackend:
                     success=False,
                     error_code=type(error).__name__,
                     started_at=started_at,
+                    provider=self.provider,
+                    billing_mode=self.billing_mode,
+                    cost_status=CostStatus.UNKNOWN,
                 )
             )
             raise
@@ -294,6 +322,11 @@ class OpenAIBackend:
                 retry_count=None,
                 usage_status=usage_status,
                 started_at=started_at,
+                provider=self.provider,
+                billing_mode=self.billing_mode,
+                cost_status=(
+                    CostStatus.ESTIMATED if estimate.cost_usd is not None else CostStatus.UNKNOWN
+                ),
             )
         )
         return result
@@ -351,4 +384,84 @@ def _local_call_record(
         latency_ms=latency_ms,
         retry_count=0,
         usage_status=UsageStatus.OFFLINE,
+        provider=BackendProvider.LOCAL,
+        billing_mode=BillingMode.OFFLINE,
+        cost_status=CostStatus.NOT_APPLICABLE,
+    )
+
+
+def _deterministic_draft(brief: dict[str, Any]) -> DraftProposal:
+    question_id = str(brief["question_id"])
+    company = str(brief["company"])
+    job = str(brief["job"])
+    evidence = dict(brief["evidence"])
+    transfer = dict(brief["transfer"])
+    event_id = str(evidence["event_id"])
+    raw = [
+        (
+            SentenceRole.ANSWER,
+            f"이 경험에서 증명한 판단 방식을 {company} {job}에 적용하겠습니다.",
+            "직접 답변",
+            None,
+        ),
+        (
+            SentenceRole.COMPANY_NEED,
+            f"{company} {job}에는 부분 최적화보다 전체 흐름을 보는 판단이 필요합니다.",
+            "회사 직무 수요",
+            None,
+        ),
+        (
+            SentenceRole.PERSPECTIVE,
+            "저는 결과보다 먼저 확인 가능한 근거와 판단의 전제를 고정합니다.",
+            "지원자의 관점",
+            event_id,
+        ),
+        (SentenceRole.PROBLEM, str(evidence["problem"]), "해결 대상", event_id),
+        (SentenceRole.JUDGMENT, str(evidence["judgment"]), "판단 이유", event_id),
+        (SentenceRole.ACTION, str(evidence["actions"][0]), "구체 행동", event_id),
+        (SentenceRole.RESULT, str(evidence["results"][0]), "검증 결과", event_id),
+        (
+            SentenceRole.DIFFERENTIATION,
+            "불확실한 부분은 성과로 꾸미지 않고 검증 가능한 범위를 분리했습니다.",
+            "차별점",
+            event_id,
+        ),
+        (SentenceRole.TRANSFER, str(transfer["first_action"]), "입사 후 첫 행동", event_id),
+        (
+            SentenceRole.VALIDATION,
+            f"성과는 {transfer['output_or_kpi']}로 확인하겠습니다.",
+            "검증 기준",
+            event_id,
+        ),
+    ]
+    plans = [
+        SentencePlan(
+            sentence_id=f"{question_id}-S{index:02d}",
+            text=text,
+            role=role,
+            selling_point=selling_point,
+            evidence_event_id=evidence_id,
+            claim_ids=[f"{question_id}-C{index:02d}"],
+            company_connection=company
+            if role in {SentenceRole.ANSWER, SentenceRole.COMPANY_NEED, SentenceRole.TRANSFER}
+            else None,
+            interview_defensible=evidence_id is not None,
+        )
+        for index, (role, text, selling_point, evidence_id) in enumerate(raw, start=1)
+    ]
+    return DraftProposal(
+        question_id=question_id,
+        headline=f"[{evidence['title']}]",
+        direct_answer=plans[0].text,
+        prep_soara_structure=PrepSoaraStructure(
+            p=plans[0].text,
+            r=plans[4].text,
+            e_soara=" ".join(item.text for item in plans[3:8]),
+            p2=plans[8].text,
+        ),
+        sentence_plans=plans,
+        evidence_ids=[event_id],
+        company_transfer=plans[8].text,
+        interview_defense=[str(item) for item in evidence.get("boundaries", [])],
+        confidence=0.88,
     )

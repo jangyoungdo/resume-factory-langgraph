@@ -50,8 +50,7 @@ def validate_answers(application: ApplicationInput, answers: list[DraftAnswer]) 
                     code="CHARACTER_TARGET_MISS",
                     severity="warning",
                     message=(
-                        f"{answer.character_count}/{limit}자; "
-                        f"권장 목표 {target_min}~{target_max}자"
+                        f"{answer.character_count}/{limit}자; 권장 목표 {target_min}~{target_max}자"
                     ),
                 )
             )
@@ -128,9 +127,7 @@ def validate_answers(application: ApplicationInput, answers: list[DraftAnswer]) 
                     )
         _validate_forbidden_combinations(answer, evidence_by_id, issues)
 
-    role_counts = Counter(
-        sentence.role for answer in answers for sentence in answer.sentence_plans
-    )
+    role_counts = Counter(sentence.role for answer in answers for sentence in answer.sentence_plans)
     total = sum(role_counts.values()) or 1
     evidence_roles = {
         SentenceRole.PROBLEM,

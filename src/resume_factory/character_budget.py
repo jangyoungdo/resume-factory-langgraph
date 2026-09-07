@@ -203,9 +203,7 @@ def _shorten_to_target(answer: DraftAnswer, bounds: CharacterBounds) -> DraftAns
         ("직무에는 예방보전 판단의 일관성이 필요합니다.", "예방보전 판단에는 일관성이 필요합니다."),
     )
     available = [
-        pair
-        for pair in replacements
-        if any(pair[0] in plan.text for plan in answer.sentence_plans)
+        pair for pair in replacements if any(pair[0] in plan.text for plan in answer.sentence_plans)
     ]
     best: tuple[tuple[int, int], tuple[tuple[str, str], ...]] | None = None
     for count in range(1, len(available) + 1):

@@ -14,9 +14,9 @@ async def test_full_graph_runs_offline_and_is_grounded() -> None:
     assert result.status == "validated"
     assert result.answers[0].evidence_ids == ["SYNTH-PHM-01"]
     assert result.validation.metrics["sentence_role_coverage"] == 1
-    assert len(result.team_decisions) == 14
+    assert len(result.team_decisions) == 4
     assert any(call.agent_role.endswith("_anonymous_critic") for call in backend.calls)
-    assert any(call.agent_role == "brand_director" for call in backend.calls)
+    assert any(call.agent_role == "evidence_brand_lead" for call in backend.calls)
     assert 582 <= result.answers[0].character_count <= 588
     assert result.telemetry.metadata["character_rewrite_attempts"] == ["Q1"]
 
@@ -46,9 +46,7 @@ async def test_questions_can_select_distinct_evidence_packets() -> None:
     )
     application.evidence.append(second)
 
-    result = await run_resume_graph(
-        application, DeterministicBackend(), ExecutionMode.ECONOMY
-    )
+    result = await run_resume_graph(application, DeterministicBackend(), ExecutionMode.ECONOMY)
 
     assert result.answers[0].evidence_ids == ["SYNTH-PHM-01"]
     assert result.answers[1].evidence_ids == ["SYNTH-LEAD-02"]
