@@ -3,9 +3,17 @@ from pathlib import Path
 from resume_factory.agents import DeterministicBackend
 from resume_factory.graph import run_resume_graph
 from resume_factory.schemas import ApplicationInput, ExecutionMode
+from resume_factory.validators import NUMBER_RE
 from resume_factory.validators import validate_answers
 
 FIXTURE = Path(__file__).parent / "fixtures" / "sample_application.json"
+
+
+def test_numeric_parser_preserves_thousands_separators() -> None:
+    assert [item.replace(",", "") for item in NUMBER_RE.findall("8,192개와 93.6Hz")] == [
+        "8192",
+        "93.6",
+    ]
 
 
 async def test_unverified_number_is_hard_failure() -> None:

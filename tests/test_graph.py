@@ -26,3 +26,28 @@ async def test_economy_mode_uses_fewer_agents() -> None:
     await run_resume_graph(application, economy_backend, ExecutionMode.ECONOMY)
     await run_resume_graph(application, balanced_backend, ExecutionMode.BALANCED)
     assert len(economy_backend.calls) < len(balanced_backend.calls)
+
+
+async def test_questions_can_select_distinct_evidence_packets() -> None:
+    application = ApplicationInput.model_validate_json(FIXTURE.read_text(encoding="utf-8"))
+    application.questions.append(
+        application.questions[0].model_copy(
+            update={"question_id": "Q2", "text": "최근 주도 경험을 작성하십시오."}
+        )
+    )
+    second = application.evidence[0].model_copy(
+        update={
+            "event_id": "SYNTH-LEAD-02",
+            "title": "재현 가능한 인계",
+            "best_for_questions": ["Q2"],
+        }
+    )
+    application.evidence.append(second)
+
+    result = await run_resume_graph(
+        application, DeterministicBackend(), ExecutionMode.ECONOMY
+    )
+
+    assert result.answers[0].evidence_ids == ["SYNTH-PHM-01"]
+    assert result.answers[1].evidence_ids == ["SYNTH-LEAD-02"]
+    assert result.transfer_contracts[1].evidence_event_id == "SYNTH-LEAD-02"

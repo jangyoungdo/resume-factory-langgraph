@@ -61,6 +61,7 @@ class EvidencePacket(BaseModel):
     numeric_authorities: list[NumericAuthority] = Field(default_factory=list)
     boundaries: list[str] = Field(default_factory=list)
     forbidden_combinations: list[str] = Field(default_factory=list)
+    best_for_questions: list[str] = Field(default_factory=list)
 
 
 class ApplicationInput(BaseModel):
@@ -246,4 +247,3 @@ class RunResult(BaseModel):
     team_decisions: list[TeamDecision]
     eligibility_warnings: list[str]
     telemetry: RunTelemetry
-

@@ -13,7 +13,7 @@ from .schemas import (
     ValidationReport,
 )
 
-NUMBER_RE = re.compile(r"(?<![A-Za-z])\d+(?:\.\d+)?")
+NUMBER_RE = re.compile(r"(?<![A-Za-z])\d{1,3}(?:,\d{3})*(?:\.\d+)?|(?<![A-Za-z])\d+(?:\.\d+)?")
 GENERIC_PHRASES = ("열정으로 기여하겠습니다", "최선을 다하겠습니다")
 
 
@@ -91,7 +91,8 @@ def validate_answers(application: ApplicationInput, answers: list[DraftAnswer]) 
                         sentence_id=sentence.sentence_id,
                     )
                 )
-            for number in NUMBER_RE.findall(sentence.text):
+            for raw_number in NUMBER_RE.findall(sentence.text):
+                number = raw_number.replace(",", "")
                 if number not in authority_values:
                     issues.append(
                         ValidationIssue(

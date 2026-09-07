@@ -110,7 +110,9 @@ def build_graph(backend: AgentBackend) -> Any:
             },
             state["mode"],
         )
-        selected = app.evidence[0]
+        selected_by_question = [
+            _select_evidence(question.question_id, app.evidence) for question in app.questions
+        ]
         contracts = [
             TransferContract(
                 question_id=question.question_id,
@@ -123,20 +125,24 @@ def build_graph(backend: AgentBackend) -> Any:
                 output_or_kpi=state["demand_brief"].kpis[0],
                 boundary="검증된 분석 경험을 적용하되 실제 설비 기준과 현장 절차를 먼저 학습한다.",
             )
-            for question in app.questions
+            for question, selected in zip(app.questions, selected_by_question, strict=True)
         ]
         return {"transfer_contracts": contracts, "team_decisions": [decision]}
 
     async def branding(state: ResumeGraphState) -> dict[str, Any]:
         app = state["application"]
-        selected = app.evidence[0]
+        selected_ids = list(
+            dict.fromkeys(contract.evidence_event_id for contract in state["transfer_contracts"])
+        )
+        selected_by_id = {item.event_id: item for item in app.evidence}
+        selected = selected_by_id[selected_ids[0]]
         decision, _ = await run_team(
             TEAMS["branding"],
             backend,
             {
                 "company": app.company,
                 "job": app.job,
-                "evidence_ids": [selected.event_id],
+                "evidence_ids": selected_ids,
                 "transfer_contracts": [item.model_dump() for item in state["transfer_contracts"]],
             },
             state["mode"],
@@ -147,7 +153,7 @@ def build_graph(backend: AgentBackend) -> Any:
             ),
             primary_differentiator="분석 결과를 검증 가능한 현장 행동으로 연결하는 역량",
             supporting_differentiators=selected.capabilities[:2],
-            proof_events=[selected.event_id],
+            proof_events=selected_ids,
             company_application=state["transfer_contracts"][0].first_action,
             avoid_language=["근거 없는 전문가 표현", "취득하지 않은 자격의 보유 주장"],
             anticipated_objections=["PoC 경험과 실제 생산설비의 차이"],
@@ -156,11 +162,12 @@ def build_graph(backend: AgentBackend) -> Any:
 
     async def draft(state: ResumeGraphState) -> dict[str, Any]:
         app = state["application"]
-        selected = app.evidence[0]
+        evidence_by_id = {item.event_id: item for item in app.evidence}
 
         async def draft_question(question_index: int) -> tuple[DraftAnswer, list[TeamDecision]]:
             question = app.questions[question_index]
             transfer = state["transfer_contracts"][question_index]
+            selected = evidence_by_id[transfer.evidence_event_id]
             brief = {
                 "company": app.company,
                 "job": app.job,
@@ -296,19 +303,19 @@ def _compose_grounded_answer(
     sentences = [
         (
             SentenceRole.ANSWER,
-            f"저는 {evidence.title} 경험을 {app.company} {app.job}의 설비 판단에 적용하겠습니다.",
+            f"이 경험에서 증명한 판단 방식을 {app.company} {app.job}에 적용하겠습니다.",
             "질문에 대한 직접 답변",
             None,
         ),
         (
             SentenceRole.COMPANY_NEED,
-            f"{app.company}는 {app.job}에서 예방보전 판단의 일관성이 필요합니다.",
+            "직무에는 예방보전 판단의 일관성이 필요합니다.",
             "회사의 직무 수요",
             None,
         ),
         (
             SentenceRole.PERSPECTIVE,
-            "저는 분석 정확도만큼 현장에서 확인할 수 있는 근거가 중요하다고 봅니다.",
+            "분석값보다 확인 가능한 근거를 중시합니다.",
             "지원자의 판단 기준",
             evidence.event_id,
         ),
@@ -338,7 +345,7 @@ def _compose_grounded_answer(
         ),
         (
             SentenceRole.DIFFERENTIATION,
-            "분석값을 제시하는 데서 멈추지 않고 점검 순서와 근거 기록까지 연결했습니다.",
+            "결과를 점검 순서와 기록으로 연결했습니다.",
             "분석을 행동으로 바꾸는 차별점",
             evidence.event_id,
         ),
@@ -350,7 +357,7 @@ def _compose_grounded_answer(
         ),
         (
             SentenceRole.VALIDATION,
-            f"그 결과를 {transfer.output_or_kpi}로 확인하겠습니다.",
+            f"성과는 {transfer.output_or_kpi}로 확인하겠습니다.",
             "성과 확인 기준",
             evidence.event_id,
         ),
@@ -372,7 +379,7 @@ def _compose_grounded_answer(
     ]
     return DraftAnswer(
         question_id=question_id,
-        headline=f"[{evidence.title}을 현장 판단으로]",
+        headline=f"[{evidence.title}]",
         body=" ".join(item.text for item in plans),
         sentence_plans=plans,
         evidence_ids=[evidence.event_id],
@@ -385,3 +392,11 @@ def _first_clause(text: str) -> str:
         if delimiter in stripped:
             return stripped.split(delimiter, 1)[0].strip() or stripped
     return stripped
+
+
+def _select_evidence(question_id: str, evidence: list[EvidencePacket]) -> EvidencePacket:
+    """Prefer an explicit question-to-evidence contract, with stable fallback ordering."""
+    return next(
+        (item for item in evidence if question_id in item.best_for_questions),
+        evidence[0],
+    )
