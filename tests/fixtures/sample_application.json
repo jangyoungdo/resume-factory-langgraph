@@ -1,0 +1,40 @@
+{
+  "company": "Sample Steel",
+  "job": "Maintenance Engineer",
+  "industry": "steel manufacturing",
+  "job_description": "생산설비의 예방보전 계획을 수립하고 이상 원인을 분석해 정비 우선순위를 관리한다.",
+  "company_context": "Sample Steel은 연속생산 설비의 가동 안정성과 품질 일관성을 강화하고 있다.",
+  "questions": [
+    {
+      "question_id": "Q1",
+      "text": "지원 동기와 입사 후 기여 방안을 작성하십시오.",
+      "character_limit": 600,
+      "required": true
+    }
+  ],
+  "evidence": [
+    {
+      "event_id": "SYNTH-PHM-01",
+      "title": "진동 데이터 기반 이상 후보 분석",
+      "problem": "설비 신호만으로는 점검 대상을 일관되게 정하기 어려웠습니다.",
+      "judgment": "모델 정확도보다 원신호와 진단 후보를 함께 검증해야 현장 판단에 사용할 수 있다",
+      "actions": [
+        "주파수 특징과 운전 조건을 대조해 이상 후보의 점검 순서를 정리했습니다."
+      ],
+      "results": [
+        "분석 시간을 18분에서 6분으로 줄이고 결과에 근거 ID를 남겼습니다."
+      ],
+      "capabilities": ["condition monitoring", "evidence tracking"],
+      "source_ref": "synthetic://experience/phm-01",
+      "source_hash": "8e06d2d77272818ef19f00711d9a339014ee364108b3a39a42f309960fa5f8fd",
+      "numeric_authorities": [
+        {"authority_id": "SYN-N-18", "value": 18, "unit": "minute", "status": "verified"},
+        {"authority_id": "SYN-N-06", "value": 6, "unit": "minute", "status": "verified"}
+      ],
+      "boundaries": ["합성 PoC이며 실제 생산설비 정비를 수행한 경험은 아니다."],
+      "forbidden_combinations": ["SYNTH-PHM-02"]
+    }
+  ],
+  "eligibility_notes": ["필수 자격의 최종 취득 여부를 제출 전에 확인해야 합니다."]
+}
+

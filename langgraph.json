@@ -1,0 +1,8 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "resume_factory_offline": "./src/resume_factory/studio.py:graph"
+  },
+  "env": ".env"
+}
+
