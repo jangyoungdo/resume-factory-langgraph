@@ -24,9 +24,7 @@ class Tracker:
         if experiment is None:
             experiment_id = mlflow.create_experiment(
                 "resume-factory",
-                artifact_location=(self.settings.local_dir / "mlflow-artifacts")
-                .resolve()
-                .as_uri(),
+                artifact_location=(self.settings.local_dir / "mlflow-artifacts").resolve().as_uri(),
             )
         else:
             experiment_id = experiment.experiment_id
@@ -44,6 +42,9 @@ class Tracker:
                 "company": result.input_summary["company"],
                 "job": result.input_summary["job"],
                 "status": result.status,
+                "provider": result.telemetry.provider.value,
+                "billing_mode": result.telemetry.billing_mode.value,
+                "graph_version": result.telemetry.graph_version,
             }
         )
         metrics = {
@@ -51,7 +52,8 @@ class Tracker:
             for key, value in result.validation.metrics.items()
             if isinstance(value, (int, float, bool))
         }
-        metrics["total_cost_usd"] = result.telemetry.total_cost_usd
+        if result.telemetry.cost_status.value == "estimated":
+            metrics["total_cost_usd"] = result.telemetry.total_cost_usd
         metrics["model_calls"] = len(result.telemetry.model_calls)
         total = aggregate_calls(result.telemetry.model_calls)[0]
         for key in (
@@ -76,6 +78,7 @@ class Tracker:
                 "job": result.input_summary["job"],
                 "price_catalog_version": result.telemetry.price_catalog_version or "unknown",
                 "cost_complete": str(result.telemetry.cost_complete).lower(),
+                "cost_status": result.telemetry.cost_status.value,
             }
         )
         for group_by in ("question", "team", "agent", "model"):

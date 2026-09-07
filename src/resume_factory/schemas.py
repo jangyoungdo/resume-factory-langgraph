@@ -35,6 +35,24 @@ class UsageStatus(StrEnum):
     LEGACY = "legacy"
 
 
+class BackendProvider(StrEnum):
+    LOCAL = "local"
+    OPENAI_API = "openai_api"
+    CODEX_CLI = "codex_cli"
+
+
+class BillingMode(StrEnum):
+    OFFLINE = "offline"
+    API = "api"
+    CHATGPT_SUBSCRIPTION = "chatgpt_subscription"
+
+
+class CostStatus(StrEnum):
+    NOT_APPLICABLE = "not_applicable"
+    ESTIMATED = "estimated"
+    UNKNOWN = "unknown"
+
+
 class FeedbackDecision(StrEnum):
     ACCEPTED = "accepted"
     REVISED = "revised"
@@ -54,6 +72,36 @@ class SentenceRole(StrEnum):
     TRANSFER = "transfer"
     BOUNDARY = "boundary"
     CAUSAL_BRIDGE = "causal_bridge"
+
+
+class SentencePlan(BaseModel):
+    sentence_id: str
+    text: str
+    role: SentenceRole
+    selling_point: str
+    evidence_event_id: str | None = None
+    claim_ids: list[str] = Field(default_factory=list)
+    company_connection: str | None = None
+    interview_defensible: bool = False
+
+
+class PrepSoaraStructure(BaseModel):
+    p: str = ""
+    r: str = ""
+    e_soara: str = ""
+    p2: str = ""
+
+
+class DraftProposal(BaseModel):
+    question_id: str
+    headline: str
+    direct_answer: str
+    prep_soara_structure: PrepSoaraStructure = Field(default_factory=PrepSoaraStructure)
+    sentence_plans: list[SentencePlan]
+    evidence_ids: list[str]
+    company_transfer: str
+    interview_defense: list[str] = Field(default_factory=list)
+    confidence: float = Field(ge=0, le=1)
 
 
 class ApplicationQuestion(BaseModel):
@@ -95,6 +143,8 @@ class ApplicationInput(BaseModel):
     questions: list[ApplicationQuestion]
     evidence: list[EvidencePacket]
     eligibility_notes: list[str] = Field(default_factory=list)
+    existing_draft: str | None = None
+    previous_outcomes: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def require_questions_and_evidence(self) -> ApplicationInput:
@@ -138,6 +188,8 @@ class AgentProposal(BaseModel):
     score: AgentScore
     confidence: float = Field(ge=0, le=1)
     needs_escalation: bool = False
+    draft: DraftProposal | None = None
+    drafts: list[DraftProposal] = Field(default_factory=list)
 
 
 class CritiqueReport(BaseModel):
@@ -156,6 +208,7 @@ class TeamDecision(BaseModel):
     confidence: float = Field(ge=0, le=1)
     evidence_ids: list[str] = Field(default_factory=list)
     escalated_to: ModelTier | None = None
+    selected_draft: DraftProposal | None = None
 
 
 class DemandBrief(BaseModel):
@@ -214,17 +267,6 @@ class PositioningBrief(BaseModel):
     company_application: str
     avoid_language: list[str]
     anticipated_objections: list[str]
-
-
-class SentencePlan(BaseModel):
-    sentence_id: str
-    text: str
-    role: SentenceRole
-    selling_point: str
-    evidence_event_id: str | None = None
-    claim_ids: list[str] = Field(default_factory=list)
-    company_connection: str | None = None
-    interview_defensible: bool = False
 
 
 class DraftAnswer(BaseModel):
@@ -292,11 +334,21 @@ class ModelCallRecord(BaseModel):
     success: bool = True
     error_code: str | None = None
     started_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    provider: BackendProvider = BackendProvider.LOCAL
+    billing_mode: BillingMode = BillingMode.OFFLINE
+    cost_status: CostStatus = CostStatus.NOT_APPLICABLE
+    provider_run_id: str | None = None
 
     @model_validator(mode="after")
     def populate_legacy_total_tokens(self) -> ModelCallRecord:
         if self.total_tokens == 0 and self.input_tokens + self.output_tokens > 0:
             self.total_tokens = self.input_tokens + self.output_tokens
+        if (
+            self.estimated_cost_usd is None
+            and self.usage_status is UsageStatus.MISSING
+            and self.billing_mode is not BillingMode.CHATGPT_SUBSCRIPTION
+        ):
+            self.cost_status = CostStatus.UNKNOWN
         return self
 
 
@@ -309,6 +361,14 @@ class RunTelemetry(BaseModel):
     cost_complete: bool = True
     price_catalog_version: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+    provider: BackendProvider = BackendProvider.LOCAL
+    billing_mode: BillingMode = BillingMode.OFFLINE
+    cost_status: CostStatus = CostStatus.NOT_APPLICABLE
+    graph_version: str = "v0.4"
+    graph_nodes_completed: list[str] = Field(default_factory=list)
+    base_call_budget: int = 0
+    optional_calls_used: int = 0
+    hard_call_cap: int = 0
 
 
 class RunResult(BaseModel):

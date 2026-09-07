@@ -104,9 +104,12 @@ def test_price_catalog_separates_cached_tokens_and_marks_unknown_model() -> None
         "known", input_tokens=1000, cached_input_tokens=500, output_tokens=1000
     )
     assert estimate.cost_usd == 0.00255
-    assert catalog.estimate(
-        "unknown", input_tokens=100, cached_input_tokens=0, output_tokens=10
-    ).cost_usd is None
+    assert (
+        catalog.estimate(
+            "unknown", input_tokens=100, cached_input_tokens=0, output_tokens=10
+        ).cost_usd
+        is None
+    )
 
 
 def test_character_bounds_cover_600_and_500_character_questions() -> None:
@@ -213,7 +216,7 @@ async def test_graph_records_unique_offline_call_lineage() -> None:
     assert len({call.call_id for call in calls}) == len(calls)
     assert [call.sequence for call in calls] == list(range(1, len(calls) + 1))
     assert all(call.usage_status is UsageStatus.OFFLINE for call in calls)
-    assert any(call.question_id == "Q1" and call.team == "soara" for call in calls)
+    assert any(call.question_id == "Q1" and call.team == "writing_council" for call in calls)
     assert any(call.question_id is None and call.team == "intelligence" for call in calls)
     assert any(call.call_kind is CallKind.CHARACTER_REWRITE for call in calls)
 

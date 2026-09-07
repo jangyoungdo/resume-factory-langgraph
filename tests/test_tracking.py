@@ -50,9 +50,7 @@ async def test_mlflow_receives_aggregate_usage_without_draft_content(
         local_dir=tmp_path / ".local",
     )
     application = ApplicationInput.model_validate_json(FIXTURE.read_text(encoding="utf-8"))
-    result = await run_resume_graph(
-        application, DeterministicBackend(), ExecutionMode.BALANCED
-    )
+    result = await run_resume_graph(application, DeterministicBackend(), ExecutionMode.BALANCED)
 
     Tracker(settings).log_result(result)
 

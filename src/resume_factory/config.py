@@ -22,6 +22,9 @@ class Settings:
     enable_mlflow: bool
     mlflow_tracking_uri: str
     local_dir: Path
+    backend: str = "codex"
+    codex_max_concurrency: int = 2
+    codex_timeout_seconds: float = 180
 
     @classmethod
     def from_env(cls, cwd: Path | None = None) -> Settings:
@@ -37,10 +40,11 @@ class Settings:
             notion_token=os.getenv("RF_NOTION_TOKEN") or None,
             openai_api_key=os.getenv("OPENAI_API_KEY") or None,
             enable_mlflow=os.getenv("RF_ENABLE_MLFLOW", "false").lower() == "true",
-            mlflow_tracking_uri=os.getenv(
-                "RF_MLFLOW_TRACKING_URI", "sqlite:///.local/mlflow.db"
-            ),
+            mlflow_tracking_uri=os.getenv("RF_MLFLOW_TRACKING_URI", "sqlite:///.local/mlflow.db"),
             local_dir=base / ".local",
+            backend=os.getenv("RF_BACKEND", "codex"),
+            codex_max_concurrency=int(os.getenv("RF_CODEX_MAX_CONCURRENCY", "2")),
+            codex_timeout_seconds=float(os.getenv("RF_CODEX_TIMEOUT_SECONDS", "180")),
         )
 
     def model_for(self, tier: ModelTier) -> str:
@@ -55,4 +59,3 @@ class Settings:
 def _optional_path(name: str) -> Path | None:
     value = os.getenv(name)
     return Path(value).expanduser().resolve() if value else None
-
