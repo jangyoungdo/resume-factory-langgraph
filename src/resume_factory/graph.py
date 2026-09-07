@@ -11,6 +11,7 @@ from .agents import AgentBackend
 from .character_budget import rewrite_to_character_target
 from .schemas import (
     ApplicationInput,
+    CallKind,
     DemandBrief,
     DraftAnswer,
     EvidencePacket,
@@ -178,6 +179,7 @@ def build_graph(backend: AgentBackend) -> Any:
             brief = {
                 "company": app.company,
                 "job": app.job,
+                "question_id": question.question_id,
                 "question": question.text,
                 "positioning": state["positioning_brief"].model_dump(),
                 "transfer": transfer.model_dump(),
@@ -234,6 +236,12 @@ def build_graph(backend: AgentBackend) -> Any:
             rewritten.append(updated)
             if did_attempt:
                 attempted.append(answer.question_id)
+                backend.record_local_operation(
+                    role="character_budget_rewriter",
+                    team="integration",
+                    question_id=answer.question_id,
+                    call_kind=CallKind.CHARACTER_REWRITE,
+                )
         return {
             "answers": rewritten,
             "character_rewrite_attempts": attempted,
@@ -296,7 +304,10 @@ async def run_resume_graph(
     application: ApplicationInput,
     backend: AgentBackend,
     mode: ExecutionMode,
+    run_id: str | None = None,
 ) -> RunResult:
+    resolved_run_id = run_id or uuid.uuid4().hex[:12]
+    backend.begin_run(resolved_run_id)
     graph = build_graph(backend)
     state = await graph.ainvoke(
         {
@@ -305,19 +316,21 @@ async def run_resume_graph(
             "team_decisions": [],
         }
     )
-    run_id = uuid.uuid4().hex[:12]
-    calls = backend.calls
+    calls = sorted(backend.calls, key=lambda call: call.sequence)
+    known_cost = sum(call.estimated_cost_usd or 0 for call in calls)
     telemetry = RunTelemetry(
-        run_id=run_id,
+        run_id=resolved_run_id,
         mode=mode,
         model_calls=calls,
-        total_cost_usd=round(sum(call.estimated_cost_usd for call in calls), 6),
+        total_cost_usd=round(known_cost, 6),
+        cost_complete=all(call.estimated_cost_usd is not None for call in calls),
+        price_catalog_version=backend.price_catalog_version,
         prompt_versions={"core": "v0.1.0"},
         metadata={"character_rewrite_attempts": state.get("character_rewrite_attempts", [])},
     )
     validation = state["validation"]
     return RunResult(
-        run_id=run_id,
+        run_id=resolved_run_id,
         status="validated" if validation.passed else "needs_review",
         input_summary={"company": application.company, "job": application.job},
         demand_brief=state["demand_brief"],
