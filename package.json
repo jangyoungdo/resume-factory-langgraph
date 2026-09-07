@@ -4,10 +4,11 @@
   "scripts": {
     "diagrams": "npm run diagram:overview && npm run diagram:teams",
     "diagrams:ci": "npm run diagram:overview:ci && npm run diagram:teams:ci",
-    "diagram:overview": "mmdc -i docs/architecture/vertical-ai-overview.mmd -o docs/architecture/vertical-ai-overview.svg -b transparent && mmdc -i docs/architecture/vertical-ai-overview.mmd -o docs/architecture/vertical-ai-overview.png -b white -w 1920 -H 1080",
-    "diagram:overview:ci": "mmdc -p .github/puppeteer-ci.json -i docs/architecture/vertical-ai-overview.mmd -o docs/architecture/vertical-ai-overview.svg -b transparent && mmdc -p .github/puppeteer-ci.json -i docs/architecture/vertical-ai-overview.mmd -o docs/architecture/vertical-ai-overview.png -b white -w 1920 -H 1080",
-    "diagram:teams": "mmdc -i docs/architecture/multi-agent-team-flow.mmd -o docs/architecture/multi-agent-team-flow.svg -b transparent && mmdc -i docs/architecture/multi-agent-team-flow.mmd -o docs/architecture/multi-agent-team-flow.png -b white -w 1920 -H 1080",
-    "diagram:teams:ci": "mmdc -p .github/puppeteer-ci.json -i docs/architecture/multi-agent-team-flow.mmd -o docs/architecture/multi-agent-team-flow.svg -b transparent && mmdc -p .github/puppeteer-ci.json -i docs/architecture/multi-agent-team-flow.mmd -o docs/architecture/multi-agent-team-flow.png -b white -w 1920 -H 1080"
+    "diagrams:svg:ci": "mmdc -p .github/puppeteer-ci.json -i docs/architecture/vertical-ai-overview.mmd -o docs/architecture/vertical-ai-overview.svg -b transparent && mmdc -p .github/puppeteer-ci.json -i docs/architecture/multi-agent-team-flow.mmd -o docs/architecture/multi-agent-team-flow.svg -b transparent",
+    "diagram:overview": "mmdc -i docs/architecture/vertical-ai-overview.mmd -o docs/architecture/vertical-ai-overview.svg -b transparent && mmdc -i docs/architecture/vertical-ai-overview.mmd -o docs/architecture/vertical-ai-overview.png -b white -w 1920 -H 1080 -s 1.634042553",
+    "diagram:overview:ci": "mmdc -p .github/puppeteer-ci.json -i docs/architecture/vertical-ai-overview.mmd -o docs/architecture/vertical-ai-overview.svg -b transparent && mmdc -p .github/puppeteer-ci.json -i docs/architecture/vertical-ai-overview.mmd -o docs/architecture/vertical-ai-overview.png -b white -w 1920 -H 1080 -s 1.634042553",
+    "diagram:teams": "mmdc -i docs/architecture/multi-agent-team-flow.mmd -o docs/architecture/multi-agent-team-flow.svg -b transparent && mmdc -i docs/architecture/multi-agent-team-flow.mmd -o docs/architecture/multi-agent-team-flow.png -b white -w 1920 -H 1080 -s 1.008403361",
+    "diagram:teams:ci": "mmdc -p .github/puppeteer-ci.json -i docs/architecture/multi-agent-team-flow.mmd -o docs/architecture/multi-agent-team-flow.svg -b transparent && mmdc -p .github/puppeteer-ci.json -i docs/architecture/multi-agent-team-flow.mmd -o docs/architecture/multi-agent-team-flow.png -b white -w 1920 -H 1080 -s 1.008403361"
   },
   "devDependencies": {
     "@mermaid-js/mermaid-cli": "11.17.0"
