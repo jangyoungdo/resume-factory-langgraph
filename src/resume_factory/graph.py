@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from pathlib import Path
 from typing import Annotated, Any, TypedDict
 
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph import END, START, StateGraph
 
 from .agents import AgentBackend
@@ -50,7 +52,7 @@ class ResumeGraphState(TypedDict, total=False):
     validation: Any
 
 
-def build_graph(backend: AgentBackend) -> Any:
+def build_graph(backend: AgentBackend, checkpointer: Any | None = None) -> Any:
     async def intelligence(state: ResumeGraphState) -> dict[str, Any]:
         app = state["application"]
         decision, _ = await run_team(
@@ -315,7 +317,7 @@ def build_graph(backend: AgentBackend) -> Any:
     for left, right in zip(nodes, nodes[1:], strict=False):
         builder.add_edge(left, right)
     builder.add_edge(nodes[-1], END)
-    return builder.compile()
+    return builder.compile(checkpointer=checkpointer)
 
 
 async def run_resume_graph(
@@ -323,12 +325,27 @@ async def run_resume_graph(
     backend: AgentBackend,
     mode: ExecutionMode,
     run_id: str | None = None,
+    checkpoint_path: Path | None = None,
+    resume: bool = False,
 ) -> RunResult:
     resolved_run_id = run_id or uuid.uuid4().hex[:12]
     backend.begin_run(resolved_run_id)
-    state = await build_graph(backend).ainvoke(
-        {"application": application, "mode": mode, "team_decisions": []}
+    initial = (
+        None
+        if resume
+        else {
+            "application": application,
+            "mode": mode,
+            "team_decisions": [],
+        }
     )
+    config = {"configurable": {"thread_id": resolved_run_id}}
+    if checkpoint_path is None:
+        state = await build_graph(backend).ainvoke(initial, config)
+    else:
+        checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+        async with AsyncSqliteSaver.from_conn_string(str(checkpoint_path)) as saver:
+            state = await build_graph(backend, saver).ainvoke(initial, config)
     calls = sorted(backend.calls, key=lambda call: call.sequence)
     model_calls = [call for call in calls if call.provider is not BackendProvider.LOCAL]
     optional_calls = sum(

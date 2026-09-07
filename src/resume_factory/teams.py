@@ -312,7 +312,9 @@ def _build_team_subgraph() -> Any:
     builder.add_conditional_edges("prepare", _dispatch_specialists, ["specialist"])
     builder.add_edge("specialist", "critic_and_lead")
     builder.add_edge("critic_and_lead", END)
-    return builder.compile()
+    # Team graphs receive runtime backend objects that must never be serialized into
+    # the parent application's durable checkpoint.
+    return builder.compile(checkpointer=False)
 
 
 TEAM_SUBGRAPH = _build_team_subgraph()

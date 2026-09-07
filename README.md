@@ -48,7 +48,7 @@ rf doctor --backend codex
 rf index --source <private-evidence-directory>
 rf run --application-id <private-id> --backend codex --mode balanced
 rf run --input <private-application-snapshot.json> --backend offline
-rf resume <run-id>
+rf resume <run-id>  # .local/checkpoints.sqlite의 중단 노드부터 재개
 rf deliver <run-id>
 rf review <run-id>
 rf render-draft --input <private-submission.json> --output <new-private-draft.md>
