@@ -244,7 +244,7 @@ async def _finalize_team(state: TeamRunState) -> dict[str, Any]:
         for item in ranked
     ]
     critic = None
-    if definition.include_critic:
+    if definition.include_critic and _critic_required(ranked, brief, margin):
         critic = await backend.propose(
             role=f"{definition.name}_anonymous_critic",
             team=definition.name,
@@ -265,15 +265,34 @@ async def _finalize_team(state: TeamRunState) -> dict[str, Any]:
         question_id=(str(brief["question_id"]) if brief.get("question_id") else None),
         call_kind=CallKind.LEAD,
     )
+    critic_conflict = bool(
+        critic
+        and (
+            critic.needs_escalation
+            or lead.needs_escalation
+            or (
+                critic.evidence_ids
+                and lead.evidence_ids
+                and set(critic.evidence_ids) != set(lead.evidence_ids)
+            )
+        )
+    )
     needs_sol = (
         definition.allow_sol
         and mode is not ExecutionMode.ECONOMY
-        and (margin < 0.3 or winner.confidence < 0.75)
-        and any(item.needs_escalation for item in ranked)
+        and (
+            critic_conflict
+            or (
+                (margin < 0.3 or winner.confidence < 0.75)
+                and any(item.needs_escalation for item in ranked)
+            )
+        )
     )
-    escalated_to = ModelTier.SOL if needs_sol else None
-    if needs_sol:
-        await backend.propose(
+    use_sol = needs_sol and _claim_sol_slot(backend)
+    escalated_to = ModelTier.SOL if use_sol else None
+    adjudication = None
+    if use_sol:
+        adjudication = await backend.propose(
             role=f"{definition.name}_adjudicator",
             team=definition.name,
             brief={
@@ -298,9 +317,41 @@ async def _finalize_team(state: TeamRunState) -> dict[str, Any]:
             confidence=winner.confidence,
             evidence_ids=winner.evidence_ids,
             escalated_to=escalated_to,
-            selected_draft=lead.draft or winner.draft,
+            selected_draft=(adjudication.draft if adjudication else None)
+            or lead.draft
+            or winner.draft,
         )
     }
+
+
+def _critic_required(
+    ranked: list[AgentProposal], brief: dict[str, Any], margin: float
+) -> bool:
+    if margin < 0.3 or any(item.needs_escalation or item.risks for item in ranked):
+        return True
+    expected = set(str(item) for item in brief.get("evidence_ids", []))
+    evidence_sets = {frozenset(item.evidence_ids) for item in ranked}
+    if len(evidence_sets) > 1:
+        return True
+    for proposal in ranked:
+        if expected and not set(proposal.evidence_ids).issubset(expected):
+            return True
+        draft = proposal.draft
+        if draft is None:
+            return True
+        if draft.question_id != str(brief.get("question_id", draft.question_id)):
+            return True
+        if not draft.direct_answer.strip() or not draft.company_transfer.strip():
+            return True
+    return False
+
+
+def _claim_sol_slot(backend: AgentBackend) -> bool:
+    # No await occurs between the read and write, so this is atomic within one event loop.
+    if bool(getattr(backend, "_rf_sol_reserved", False)):
+        return False
+    vars(backend)["_rf_sol_reserved"] = True
+    return True
 
 
 def _build_team_subgraph() -> Any:

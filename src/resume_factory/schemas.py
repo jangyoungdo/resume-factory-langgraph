@@ -338,6 +338,11 @@ class ModelCallRecord(BaseModel):
     billing_mode: BillingMode = BillingMode.OFFLINE
     cost_status: CostStatus = CostStatus.NOT_APPLICABLE
     provider_run_id: str | None = None
+    queued_at: datetime | None = None
+    process_started_at: datetime | None = None
+    queue_latency_ms: int = 0
+    first_event_latency_ms: int | None = None
+    provider_execution_ms: int | None = None
 
     @model_validator(mode="after")
     def populate_legacy_total_tokens(self) -> ModelCallRecord:
@@ -350,6 +355,15 @@ class ModelCallRecord(BaseModel):
         ):
             self.cost_status = CostStatus.UNKNOWN
         return self
+
+
+class RunPhaseSpan(BaseModel):
+    phase: str
+    started_at: datetime
+    completed_at: datetime
+    duration_ms: int = Field(ge=0)
+    status: Literal["completed", "failed", "skipped"] = "completed"
+    detail: str | None = None
 
 
 class RunTelemetry(BaseModel):
@@ -369,11 +383,16 @@ class RunTelemetry(BaseModel):
     base_call_budget: int = 0
     optional_calls_used: int = 0
     hard_call_cap: int = 0
+    command_started_at: datetime | None = None
+    completed_at: datetime | None = None
+    wall_time_ms: int | None = None
+    phase_spans: list[RunPhaseSpan] = Field(default_factory=list)
+    network_status: Literal["healthy", "degraded", "unknown"] = "unknown"
 
 
 class RunResult(BaseModel):
     run_id: str
-    status: Literal["validated", "needs_review", "failed"]
+    status: Literal["validated", "needs_review", "failed", "network_degraded"]
     input_summary: dict[str, str]
     demand_brief: DemandBrief
     question_contracts: list[QuestionContract]

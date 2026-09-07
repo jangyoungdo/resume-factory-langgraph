@@ -39,6 +39,10 @@ class CodexOutputError(RuntimeError):
     pass
 
 
+class CodexNetworkDegradedError(RuntimeError):
+    pass
+
+
 class CodexExecBackend:
     """Run structured agents with ChatGPT-authenticated ``codex exec``.
 
@@ -146,16 +150,24 @@ class CodexExecBackend:
         prompt = self._prompt(role, team, brief)
         sequence = next(self._sequence)
         call_id = uuid.uuid4().hex
-        started_at = datetime.now(UTC)
+        queued_at = datetime.now(UTC)
+        started_at = queued_at
         started = time.perf_counter()
         retry_count = 0
         last_error: Exception | None = None
         async with self._semaphore:
+            queue_latency_ms = int((time.perf_counter() - started) * 1000)
+            process_started_at: datetime | None = None
+            first_event_latency_ms: int | None = None
+            provider_execution_ms = 0
             for attempt in range(2):
                 try:
-                    result, usage, provider_run_id = await self._invoke(
+                    result, usage, provider_run_id, timings = await self._invoke(
                         prompt, model_name, reasoning
                     )
+                    process_started_at = timings["process_started_at"]
+                    first_event_latency_ms = timings["first_event_latency_ms"]
+                    provider_execution_ms += timings["provider_execution_ms"]
                     elapsed = int((time.perf_counter() - started) * 1000)
                     self.calls.append(
                         self._record(
@@ -172,6 +184,11 @@ class CodexExecBackend:
                             retry_count=retry_count,
                             started_at=started_at,
                             provider_run_id=provider_run_id,
+                            queued_at=queued_at,
+                            process_started_at=process_started_at,
+                            queue_latency_ms=queue_latency_ms,
+                            first_event_latency_ms=first_event_latency_ms,
+                            provider_execution_ms=provider_execution_ms,
                         )
                     )
                     return result
@@ -179,6 +196,7 @@ class CodexExecBackend:
                     last_error = error
                     if attempt == 0:
                         retry_count = 1
+                        await asyncio.sleep(2)
                         continue
                     break
                 except (CodexOutputError, ValidationError) as error:
@@ -202,8 +220,17 @@ class CodexExecBackend:
                 started_at=started_at,
                 success=False,
                 error_code=type(last_error).__name__,
+                queued_at=queued_at,
+                process_started_at=process_started_at,
+                queue_latency_ms=queue_latency_ms,
+                first_event_latency_ms=first_event_latency_ms,
+                provider_execution_ms=provider_execution_ms or None,
             )
         )
+        if isinstance(last_error, (TimeoutError, OSError)):
+            raise CodexNetworkDegradedError(
+                "two consecutive Codex network/process attempts failed; resume from checkpoint"
+            ) from last_error
         raise last_error
 
     async def _reserve_call(self) -> None:
@@ -214,7 +241,7 @@ class CodexExecBackend:
 
     async def _invoke(
         self, prompt: str, model_name: str, reasoning: str
-    ) -> tuple[AgentProposal, dict[str, int], str | None]:
+    ) -> tuple[AgentProposal, dict[str, int], str | None, dict[str, Any]]:
         with tempfile.TemporaryDirectory(prefix="rf-codex-") as raw_dir:
             directory = Path(raw_dir)
             schema_path = directory / "agent-proposal.schema.json"
@@ -249,9 +276,33 @@ class CodexExecBackend:
                 stderr=asyncio.subprocess.PIPE,
                 env=self._safe_environment(),
             )
+            process_started_at = datetime.now(UTC)
+            invocation_started = time.perf_counter()
+
+            async def communicate_streaming() -> tuple[bytes, bytes, int | None]:
+                assert process.stdin is not None
+                assert process.stdout is not None
+                assert process.stderr is not None
+                process.stdin.write(prompt.encode("utf-8"))
+                await process.stdin.drain()
+                process.stdin.close()
+                stderr_task = asyncio.create_task(process.stderr.read())
+                chunks: list[bytes] = []
+                first_event_ms: int | None = None
+                while True:
+                    line = await process.stdout.readline()
+                    if not line:
+                        break
+                    if first_event_ms is None and line.strip():
+                        first_event_ms = int((time.perf_counter() - invocation_started) * 1000)
+                    chunks.append(line)
+                stderr = await stderr_task
+                await process.wait()
+                return b"".join(chunks), stderr, first_event_ms
+
             try:
-                stdout, stderr = await asyncio.wait_for(
-                    process.communicate(prompt.encode("utf-8")),
+                stdout, stderr, first_event_latency_ms = await asyncio.wait_for(
+                    communicate_streaming(),
                     timeout=self.timeout_seconds,
                 )
             except TimeoutError:
@@ -265,7 +316,14 @@ class CodexExecBackend:
                 + stderr.decode("utf-8", errors="replace")[-1000:]
             )
             raise CodexOutputError(f"codex exec failed ({process.returncode}): {message}")
-        return self._parse_events(stdout.decode("utf-8", errors="replace"))
+        proposal, usage, provider_run_id = self._parse_events(
+            stdout.decode("utf-8", errors="replace")
+        )
+        return proposal, usage, provider_run_id, {
+            "process_started_at": process_started_at,
+            "first_event_latency_ms": first_event_latency_ms,
+            "provider_execution_ms": int((time.perf_counter() - invocation_started) * 1000),
+        }
 
     @staticmethod
     def _parse_events(raw: str) -> tuple[AgentProposal, dict[str, int], str | None]:
@@ -340,6 +398,11 @@ class CodexExecBackend:
         provider_run_id: str | None = None,
         success: bool = True,
         error_code: str | None = None,
+        queued_at: datetime | None = None,
+        process_started_at: datetime | None = None,
+        queue_latency_ms: int = 0,
+        first_event_latency_ms: int | None = None,
+        provider_execution_ms: int | None = None,
     ) -> ModelCallRecord:
         input_tokens = usage.get("input_tokens", 0)
         output_tokens = usage.get("output_tokens", 0)
@@ -370,6 +433,11 @@ class CodexExecBackend:
             billing_mode=self.billing_mode,
             cost_status=self.cost_status,
             provider_run_id=provider_run_id,
+            queued_at=queued_at,
+            process_started_at=process_started_at,
+            queue_latency_ms=queue_latency_ms,
+            first_event_latency_ms=first_event_latency_ms,
+            provider_execution_ms=provider_execution_ms,
         )
 
     @staticmethod
@@ -392,9 +460,10 @@ class CodexExecBackend:
                 " 입력된 모든 문항을 유지해 drafts 배열에 같은 개수로 반환하라. "
                 "문항 간 목소리만 정리하고 근거 계보를 보존하라."
             )
-        elif role == "character_budget_rewriter":
+        elif role == "character_budget_batch_rewriter":
             role_contract = (
-                " current_draft만 글자 목표에 맞게 고치고 draft를 반드시 반환하라. "
+                " repairs의 모든 문항을 같은 순서의 drafts 배열로 반환하라. "
+                " Hard Gate 밖 문항만 고치고 목표 구간만 벗어난 문항은 건드리지 말라. "
                 "Python len 기준에는 소제목과 줄바꿈 한 자가 포함된다."
             )
         return (

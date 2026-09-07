@@ -2,21 +2,23 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import platform
 import shutil
 import subprocess
 import sys
+import time
 import uuid
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import Annotated, cast
+from typing import Annotated, Any, Literal, cast
 
 import typer
 from rich.console import Console
 from rich.table import Table
 
 from .agents import AgentBackend, DeterministicBackend, OpenAIBackend
-from .codex_backend import CodexExecBackend
+from .codex_backend import CodexExecBackend, CodexNetworkDegradedError
 from .config import Settings
 from .deliverables import render_bundle_file
 from .graph import run_resume_graph
@@ -26,6 +28,8 @@ from .schemas import (
     ApplicationInput,
     ExecutionMode,
     FeedbackDecision,
+    RunPhaseSpan,
+    RunResult,
     SubmissionAnswer,
     SubmissionBundle,
 )
@@ -35,7 +39,9 @@ from .usage import GroupBy, build_feedback, compare_reports, usage_report
 
 app = typer.Typer(no_args_is_help=True, help="Evidence-grounded Resume Factory")
 usage_app = typer.Typer(no_args_is_help=True, help="Inspect local model token and cost usage")
+performance_app = typer.Typer(no_args_is_help=True, help="Inspect end-to-end run latency")
 app.add_typer(usage_app, name="usage")
+app.add_typer(performance_app, name="performance")
 console = Console()
 
 
@@ -115,7 +121,7 @@ def run(
     elif selected_backend == "openai":
         agent_backend = OpenAIBackend(settings)
     elif selected_backend == "codex":
-        cap = 10 + 6 * len(application_input.questions)
+        cap = 12 + 4 * len(application_input.questions)
         codex_backend = CodexExecBackend(
             settings,
             max_concurrency=settings.codex_max_concurrency,
@@ -158,7 +164,7 @@ def resume(run_id: str) -> None:
     agent_backend = CodexExecBackend(
         settings,
         max_concurrency=settings.codex_max_concurrency,
-        hard_call_cap=10 + 6 * len(application_input.questions),
+        hard_call_cap=12 + 4 * len(application_input.questions),
         timeout_seconds=settings.codex_timeout_seconds,
     )
     asyncio.run(agent_backend.verify_chatgpt_auth())
@@ -188,6 +194,16 @@ def deliver(
     if review_patch:
         raw_patch = json.loads(review_patch.read_text(encoding="utf-8"))
         replacements = dict(raw_patch.get("replacements", {}))
+    json_path, markdown_path = _create_deliverable(result, settings, replacements)
+    console.print(f"json={json_path} markdown={markdown_path}")
+
+
+def _create_deliverable(
+    result: RunResult,
+    settings: Settings,
+    replacements: dict[str, list[list[str]]] | None = None,
+) -> tuple[Path, Path]:
+    replacements = replacements or {}
     destination = settings.local_dir / "deliverables"
     destination.mkdir(parents=True, exist_ok=True)
     stem = f"{result.input_summary['company']}_{result.input_summary['job']}_{date.today():%Y%m%d}"
@@ -231,14 +247,216 @@ def deliver(
         company=result.input_summary["company"],
         job=result.input_summary["job"],
         revision=revision,
-        source_run_id=run_id,
+        source_run_id=result.run_id,
         answers=answers,
         eligibility_warnings=result.eligibility_warnings,
     )
     json_path = destination / f"{stem}_rev{revision}.json"
     json_path.write_text(bundle.model_dump_json(indent=2), encoding="utf-8")
     markdown_path = render_bundle_file(json_path, destination / f"{stem}_rev{revision}.md")
-    console.print(f"json={json_path} markdown={markdown_path}")
+    return json_path, markdown_path
+
+
+@app.command()
+def execute(
+    application_id: Annotated[str, typer.Option()],
+    backend: Annotated[str, typer.Option(help="offline, codex, or openai")] = "codex",
+    mode: Annotated[ExecutionMode, typer.Option()] = ExecutionMode.BALANCED,
+    output: Annotated[str, typer.Option(help="text or json")] = "text",
+) -> None:
+    """Run intake, graph, QA, and private delivery without Git or CI."""
+    if output not in {"text", "json"}:
+        raise typer.BadParameter("output must be text or json")
+    settings = Settings.from_env()
+    command_at = datetime.now(UTC)
+    command_started = time.perf_counter()
+    run_id = uuid.uuid4().hex[:12]
+    external_spans: list[RunPhaseSpan] = []
+
+    async def workflow() -> tuple[RunResult, AgentBackend]:
+        selected: AgentBackend
+        if backend == "offline":
+            selected = DeterministicBackend()
+        elif backend == "openai":
+            selected = OpenAIBackend(settings)
+        elif backend == "codex":
+            selected = CodexExecBackend(
+                settings,
+                max_concurrency=settings.codex_max_concurrency,
+                hard_call_cap=40,
+                timeout_seconds=settings.codex_timeout_seconds,
+            )
+            auth_at = datetime.now(UTC)
+            auth_started = time.perf_counter()
+            auth_status: Literal["completed", "failed"] = "completed"
+            try:
+                await selected.verify_chatgpt_auth()
+            except Exception:
+                auth_status = "failed"
+                raise
+            finally:
+                external_spans.append(
+                    RunPhaseSpan(
+                        phase="authentication",
+                        started_at=auth_at,
+                        completed_at=datetime.now(UTC),
+                        duration_ms=int((time.perf_counter() - auth_started) * 1000),
+                        status=auth_status,
+                    )
+                )
+        else:
+            raise typer.BadParameter("backend must be offline, codex, or openai")
+
+        application = await load_application_from_mcp(application_id, external_spans)
+        if isinstance(selected, CodexExecBackend):
+            selected.hard_call_cap = 12 + 4 * len(application.questions)
+        input_path = settings.local_dir / "runs" / f"{run_id}.input.json"
+        input_path.parent.mkdir(parents=True, exist_ok=True)
+        input_path.write_text(application.model_dump_json(indent=2), encoding="utf-8")
+        result = await run_resume_graph(
+            application,
+            selected,
+            mode,
+            run_id=run_id,
+            checkpoint_path=settings.local_dir / "checkpoints.sqlite",
+        )
+        return result, selected
+
+    try:
+        result, _ = asyncio.run(workflow())
+    except CodexNetworkDegradedError as error:
+        failure_path = settings.local_dir / "runs" / f"{run_id}.failure.json"
+        failure_path.parent.mkdir(parents=True, exist_ok=True)
+        failure_path.write_text(
+            json.dumps(
+                {
+                    "run_id": run_id,
+                    "status": "network_degraded",
+                    "error": type(error).__name__,
+                    "resume_command": f"rf resume {run_id}",
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        console.print_json(
+            data={
+                "run_id": run_id,
+                "status": "network_degraded",
+                "checkpoint_preserved": True,
+                "failure_record": str(failure_path),
+                "resume_command": f"rf resume {run_id}",
+            }
+        )
+        raise typer.Exit(75) from error
+
+    result.telemetry.phase_spans = external_spans + result.telemetry.phase_spans
+    delivery_at = datetime.now(UTC)
+    delivery_started = time.perf_counter()
+    store = RunStore(settings.local_dir)
+    store.save(result)
+    json_path, markdown_path = _create_deliverable(result, settings)
+    result.telemetry.phase_spans.append(
+        RunPhaseSpan(
+            phase="delivery",
+            started_at=delivery_at,
+            completed_at=datetime.now(UTC),
+            duration_ms=int((time.perf_counter() - delivery_started) * 1000),
+        )
+    )
+    result.telemetry.command_started_at = command_at
+    result.telemetry.completed_at = datetime.now(UTC)
+    result.telemetry.wall_time_ms = int((time.perf_counter() - command_started) * 1000)
+    store.save(result)
+    tracker = Tracker(settings)
+    with tracker.run(f"{result.input_summary['company']}-{result.input_summary['job']}"):
+        tracker.log_result(result)
+    summary = {
+        "run_id": result.run_id,
+        "status": result.status,
+        "backend": result.telemetry.provider.value,
+        "graph_version": result.telemetry.graph_version,
+        "calls": len(
+            [call for call in result.telemetry.model_calls if call.provider.value != "local"]
+        ),
+        "wall_time_ms": result.telemetry.wall_time_ms,
+        "critical_path_ms": result.telemetry.wall_time_ms,
+        "network_status": result.telemetry.network_status,
+        "json": str(json_path),
+        "markdown": str(markdown_path),
+        "character_counts": {
+            answer.question_id: answer.character_count for answer in result.answers
+        },
+        "git_invoked": False,
+        "actual_submission_performed": False,
+    }
+    if output == "json":
+        console.print_json(data=summary)
+    else:
+        console.print(
+            f"run_id={result.run_id} status={result.status} "
+            f"duration={result.telemetry.wall_time_ms / 60000:.1f}m markdown={markdown_path}"
+        )
+
+
+@performance_app.command("show")
+def performance_show(
+    run_id: str,
+    timeline: Annotated[bool, typer.Option("--timeline")] = False,
+) -> None:
+    """Show wall-clock, provider, queue, MCP, and delivery latency."""
+    result = RunStore(Settings.from_env().local_dir).load(run_id)
+    calls = result.telemetry.model_calls
+    report: dict[str, Any] = {
+        "run_id": run_id,
+        "graph_version": result.telemetry.graph_version,
+        "wall_time_ms": result.telemetry.wall_time_ms,
+        "network_status": result.telemetry.network_status,
+        "model_calls": len([call for call in calls if call.provider.value != "local"]),
+        "queue_latency_ms": sum(call.queue_latency_ms for call in calls),
+        "provider_execution_ms": sum(call.provider_execution_ms or 0 for call in calls),
+        "max_call_ms": max((call.latency_ms for call in calls), default=0),
+        "retries": sum(call.retry_count or 0 for call in calls),
+        "phases": [span.model_dump(mode="json") for span in result.telemetry.phase_spans],
+    }
+    if not timeline:
+        phase_totals: dict[str, int] = {}
+        for span in result.telemetry.phase_spans:
+            phase_totals[span.phase] = phase_totals.get(span.phase, 0) + span.duration_ms
+        report["phases"] = phase_totals
+    console.print_json(data=report)
+
+
+@performance_app.command("summary")
+def performance_summary(
+    limit: Annotated[int, typer.Option(min=1, max=100)] = 10,
+) -> None:
+    """Summarize the latest healthy v0.6 runs and the 30-minute SLO."""
+    rows = RunStore(Settings.from_env().local_dir).list_usage_runs(100)
+    durations = [
+        int(cast(int, row["wall_time_ms"]))
+        for row in rows
+        if row.get("graph_version") == "v0.6"
+        and row.get("network_status") == "healthy"
+        and row.get("wall_time_ms") is not None
+    ][:limit]
+    ordered = sorted(durations)
+    p95 = ordered[max(0, math.ceil(len(ordered) * 0.95) - 1)] if ordered else None
+    report = {
+        "healthy_runs": len(durations),
+        "window": limit,
+        "slo_ms": 30 * 60 * 1000,
+        "average_ms": round(sum(durations) / len(durations)) if durations else None,
+        "p95_ms": p95,
+        "within_slo_ratio": (
+            round(sum(item <= 30 * 60 * 1000 for item in durations) / len(durations), 4)
+            if durations
+            else None
+        ),
+        "status": "established" if len(durations) >= 10 else "provisional",
+    }
+    console.print_json(data=report)
 
 
 @app.command("install-codex-skill")

@@ -135,6 +135,8 @@ def _aggregate_row(key: str, calls: list[ModelCallRecord]) -> dict[str, Any]:
             for call in calls
         ),
         "latency_ms": sum(call.latency_ms for call in calls),
+        "queue_latency_ms": sum(call.queue_latency_ms for call in calls),
+        "provider_execution_ms": sum(call.provider_execution_ms or 0 for call in calls),
         "failures": sum(not call.success for call in calls),
         "missing_usage_calls": sum(call.usage_status.value == "missing" for call in calls),
         "offline_calls": sum(call.usage_status.value == "offline" for call in calls),

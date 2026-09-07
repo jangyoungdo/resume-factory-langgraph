@@ -71,6 +71,14 @@ class Tracker:
         metrics["character_rewrite_count"] = float(
             len(result.telemetry.metadata.get("character_rewrite_attempts", []))
         )
+        if result.telemetry.wall_time_ms is not None:
+            metrics["wall_time_ms"] = float(result.telemetry.wall_time_ms)
+        metrics["queue_latency_ms"] = float(
+            sum(call.queue_latency_ms for call in result.telemetry.model_calls)
+        )
+        metrics["provider_execution_ms"] = float(
+            sum(call.provider_execution_ms or 0 for call in result.telemetry.model_calls)
+        )
         mlflow.log_metrics(metrics)
         mlflow.set_tags(
             {

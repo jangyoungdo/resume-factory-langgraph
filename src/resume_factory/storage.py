@@ -106,6 +106,7 @@ class RunStore:
             )
             connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES (2)")
             self._migrate_v3(connection)
+            self._migrate_v4(connection)
             self._backfill_legacy_runs(connection)
 
     def _migrate_v3(self, connection: sqlite3.Connection) -> None:
@@ -130,6 +131,27 @@ class RunStore:
         for name, definition in call_columns.items():
             self._ensure_column(connection, "model_calls", name, definition)
         connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES (3)")
+
+    def _migrate_v4(self, connection: sqlite3.Connection) -> None:
+        usage_columns = {
+            "command_started_at": "TEXT",
+            "completed_at": "TEXT",
+            "wall_time_ms": "INTEGER",
+            "phase_spans_json": "TEXT NOT NULL DEFAULT '[]'",
+            "network_status": "TEXT NOT NULL DEFAULT 'unknown'",
+        }
+        call_columns = {
+            "queued_at": "TEXT",
+            "process_started_at": "TEXT",
+            "queue_latency_ms": "INTEGER NOT NULL DEFAULT 0",
+            "first_event_latency_ms": "INTEGER",
+            "provider_execution_ms": "INTEGER",
+        }
+        for name, definition in usage_columns.items():
+            self._ensure_column(connection, "usage_runs", name, definition)
+        for name, definition in call_columns.items():
+            self._ensure_column(connection, "model_calls", name, definition)
+        connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES (4)")
 
     @staticmethod
     def _ensure_column(
@@ -187,8 +209,10 @@ class RunStore:
              cost_complete, price_catalog_version, character_rewrite_count,
              validation_json, provider, billing_mode, cost_status, graph_version,
              graph_nodes_completed_json, base_call_budget, optional_calls_used,
-             hard_call_cap)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             hard_call_cap, command_started_at, completed_at, wall_time_ms,
+             phase_spans_json, network_status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?)
             """,
             (
                 result.run_id,
@@ -214,6 +238,22 @@ class RunStore:
                 result.telemetry.base_call_budget,
                 result.telemetry.optional_calls_used,
                 result.telemetry.hard_call_cap,
+                (
+                    result.telemetry.command_started_at.isoformat()
+                    if result.telemetry.command_started_at
+                    else None
+                ),
+                (
+                    result.telemetry.completed_at.isoformat()
+                    if result.telemetry.completed_at
+                    else None
+                ),
+                result.telemetry.wall_time_ms,
+                json.dumps(
+                    [span.model_dump(mode="json") for span in result.telemetry.phase_spans],
+                    ensure_ascii=False,
+                ),
+                result.telemetry.network_status,
             ),
         )
         connection.execute("DELETE FROM model_calls WHERE run_id = ?", (result.run_id,))
@@ -225,9 +265,11 @@ class RunStore:
              cache_creation_input_tokens, output_tokens, reasoning_tokens,
              total_tokens, estimated_cost_usd, price_catalog_version, latency_ms,
              retry_count, usage_status, success, error_code, started_at,
-             provider, billing_mode, cost_status, provider_run_id)
+             provider, billing_mode, cost_status, provider_run_id, queued_at,
+             process_started_at, queue_latency_ms, first_event_latency_ms,
+             provider_execution_ms)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                    ?, ?, ?, ?)
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
@@ -262,6 +304,11 @@ class RunStore:
                     call.billing_mode.value,
                     call.cost_status.value,
                     call.provider_run_id,
+                    call.queued_at.isoformat() if call.queued_at else None,
+                    call.process_started_at.isoformat() if call.process_started_at else None,
+                    call.queue_latency_ms,
+                    call.first_event_latency_ms,
+                    call.provider_execution_ms,
                 )
                 for index, call in enumerate(result.telemetry.model_calls, start=1)
             ],

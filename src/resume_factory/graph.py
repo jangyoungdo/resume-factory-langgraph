@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
+import time
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated, Any, TypedDict
+from typing import Annotated, Any, Literal, TypedDict, cast
 
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph import END, START, StateGraph
@@ -24,6 +27,7 @@ from .schemas import (
     PositioningBrief,
     PrepSoaraStructure,
     QuestionContract,
+    RunPhaseSpan,
     RunResult,
     RunTelemetry,
     TeamDecision,
@@ -32,7 +36,7 @@ from .schemas import (
 from .teams import TEAMS, WRITING_COUNCIL, run_team
 from .validators import validate_answers
 
-GRAPH_VERSION = "v0.5"
+GRAPH_VERSION = "v0.6"
 
 
 def _append(left: list[Any], right: list[Any]) -> list[Any]:
@@ -52,7 +56,12 @@ class ResumeGraphState(TypedDict, total=False):
     validation: Any
 
 
-def build_graph(backend: AgentBackend, checkpointer: Any | None = None) -> Any:
+def build_graph(
+    backend: AgentBackend,
+    checkpointer: Any | None = None,
+    phase_spans: list[RunPhaseSpan] | None = None,
+) -> Any:
+    spans = phase_spans if phase_spans is not None else []
     async def intelligence(state: ResumeGraphState) -> dict[str, Any]:
         app = state["application"]
         decision, _ = await run_team(
@@ -143,7 +152,7 @@ def build_graph(backend: AgentBackend, checkpointer: Any | None = None) -> Any:
                 past_problem=evidence.problem,
                 reusable_judgment=evidence.judgment,
                 reusable_action=evidence.actions[0],
-                company_task=state["demand_brief"].responsibilities[0],
+                company_task=_first_clause(app.job_description),
                 first_action=_first_action(question.question_id, app.company),
                 output_or_kpi=_output_kpi(question.question_id),
                 boundary=evidence.boundaries[0]
@@ -239,59 +248,109 @@ def build_graph(backend: AgentBackend, checkpointer: Any | None = None) -> Any:
         evidence_by_id = {item.event_id: item for item in app.evidence}
         transfer_by_question = {item.question_id: item for item in state["transfer_contracts"]}
         contracts = {item.question_id: item for item in state["question_contracts"]}
-        rewritten: list[DraftAnswer] = []
+        rewritten = list(state["answers"])
         attempted: list[str] = []
-        for answer in state["answers"]:
+        failed: list[
+            tuple[int, DraftAnswer, QuestionContract, TransferContract, EvidencePacket]
+        ] = []
+        for index, answer in enumerate(state["answers"]):
             contract = contracts[answer.question_id]
-            target_min = contract.character_target_min or 0
-            target_max = contract.character_target_max or contract.character_budget
-            if target_min <= answer.character_count <= target_max:
-                rewritten.append(answer)
+            hard_min = contract.character_hard_min or 0
+            hard_max = contract.character_limit or contract.character_budget
+            if not _outside_hard_gate(answer.character_count, hard_min, hard_max):
                 continue
             attempted.append(answer.question_id)
             transfer = transfer_by_question[answer.question_id]
             evidence = evidence_by_id[transfer.evidence_event_id]
-            if backend.provider is BackendProvider.LOCAL:
+            failed.append((index, answer, contract, transfer, evidence))
+
+        if not failed:
+            return {"answers": rewritten, "character_rewrite_attempts": attempted}
+
+        if backend.provider is BackendProvider.LOCAL:
+            for index, answer, _, transfer, evidence in failed:
                 updated, _ = rewrite_to_character_target(answer, app, evidence, transfer)
-                backend.record_local_operation(
-                    role="character_budget_rewriter",
-                    team="integration",
-                    question_id=answer.question_id,
-                    call_kind=CallKind.CHARACTER_REWRITE,
-                )
-                rewritten.append(updated)
-                continue
-            proposal = await backend.propose(
-                role="character_budget_rewriter",
+                rewritten[index] = updated
+            backend.record_local_operation(
+                role="character_budget_batch_rewriter",
                 team="integration",
-                brief={
-                    **_writing_brief(
-                        app,
-                        _question_dump(app, answer.question_id),
-                        contract,
-                        transfer,
-                        evidence,
-                        state["positioning_brief"],
-                    ),
-                    "current_draft": _proposal_from_answer(answer).model_dump(),
-                    "output_contract": (
-                        f"draft 하나를 {target_min}~{target_max}자로 재작성. "
-                        "새 사실·수치 금지, sentence plan 계보 유지"
-                    ),
-                },
-                tier=ModelTier.TERRA,
-                question_id=answer.question_id,
+                question_id=None,
                 call_kind=CallKind.CHARACTER_REWRITE,
             )
-            rewritten.append(
-                _answer_from_proposal(proposal.draft, answer.character_limit)
-                if proposal.draft
-                else answer
-            )
+            return {"answers": rewritten, "character_rewrite_attempts": attempted}
+
+        proposal = await backend.propose(
+            role="character_budget_batch_rewriter",
+            team="integration",
+            brief={
+                "company": app.company,
+                "job": app.job,
+                "repairs": [
+                    {
+                        **_writing_brief(
+                            app,
+                            _question_dump(app, answer.question_id),
+                            contract,
+                            transfer,
+                            evidence,
+                            state["positioning_brief"],
+                        ),
+                        "current_draft": _proposal_from_answer(answer).model_dump(),
+                        "hard_min": contract.character_hard_min,
+                        "hard_max": contract.character_limit,
+                    }
+                    for _, answer, contract, transfer, evidence in failed
+                ],
+                "evidence_ids": list(
+                    dict.fromkeys(
+                        event_id
+                        for _, answer, _, _, _ in failed
+                        for event_id in answer.evidence_ids
+                    )
+                ),
+                "output_contract": (
+                    "repairs의 각 문항을 drafts 배열에 같은 순서로 반환. "
+                    "각 제출문은 hard_min~hard_max자이며 새 사실·수치 금지, "
+                    "sentence plan 계보 유지"
+                ),
+            },
+            tier=ModelTier.TERRA,
+            question_id=None,
+            call_kind=CallKind.CHARACTER_REWRITE,
+        )
+        if len(proposal.drafts) == len(failed):
+            for draft, (index, answer, _, _, _) in zip(proposal.drafts, failed, strict=True):
+                rewritten[index] = _answer_from_proposal(draft, answer.character_limit)
         return {"answers": rewritten, "character_rewrite_attempts": attempted}
 
     def validate(state: ResumeGraphState) -> dict[str, Any]:
         return {"validation": validate_answers(state["application"], state["answers"])}
+
+    def timed(name: str, node: Any) -> Any:
+        async def wrapped(state: ResumeGraphState) -> dict[str, Any]:
+            started_at = datetime.now(UTC)
+            started = time.perf_counter()
+            status: Literal["completed", "failed"] = "completed"
+            try:
+                result = node(state)
+                resolved = await result if inspect.isawaitable(result) else result
+                return cast(dict[str, Any], resolved)
+            except Exception:
+                status = "failed"
+                raise
+            finally:
+                completed_at = datetime.now(UTC)
+                spans.append(
+                    RunPhaseSpan(
+                        phase=name,
+                        started_at=started_at,
+                        completed_at=completed_at,
+                        duration_ms=int((time.perf_counter() - started) * 1000),
+                        status=status,
+                    )
+                )
+
+        return wrapped
 
     builder = StateGraph(ResumeGraphState)
     for name, node in (
@@ -303,20 +362,15 @@ def build_graph(backend: AgentBackend, checkpointer: Any | None = None) -> Any:
         ("character_budget_gate", character_budget_gate),
         ("deterministic_qa", validate),
     ):
-        builder.add_node(name, node)
-    nodes = [
-        "company_job_intelligence",
-        "question_strategy",
-        "evidence_branding",
-        "writing_councils",
-        "integration",
-        "character_budget_gate",
-        "deterministic_qa",
-    ]
-    builder.add_edge(START, nodes[0])
-    for left, right in zip(nodes, nodes[1:], strict=False):
-        builder.add_edge(left, right)
-    builder.add_edge(nodes[-1], END)
+        builder.add_node(name, timed(name, node))
+    common = ["company_job_intelligence", "question_strategy", "evidence_branding"]
+    for common_node in common:
+        builder.add_edge(START, common_node)
+    builder.add_edge(common, "writing_councils")
+    builder.add_edge("writing_councils", "integration")
+    builder.add_edge("integration", "character_budget_gate")
+    builder.add_edge("character_budget_gate", "deterministic_qa")
+    builder.add_edge("deterministic_qa", END)
     return builder.compile(checkpointer=checkpointer)
 
 
@@ -328,6 +382,9 @@ async def run_resume_graph(
     checkpoint_path: Path | None = None,
     resume: bool = False,
 ) -> RunResult:
+    run_started_at = datetime.now(UTC)
+    run_started = time.perf_counter()
+    phase_spans: list[RunPhaseSpan] = []
     resolved_run_id = run_id or uuid.uuid4().hex[:12]
     backend.begin_run(resolved_run_id)
     initial = (
@@ -341,15 +398,16 @@ async def run_resume_graph(
     )
     config = {"configurable": {"thread_id": resolved_run_id}}
     if checkpoint_path is None:
-        state = await build_graph(backend).ainvoke(initial, config)
+        state = await build_graph(backend, phase_spans=phase_spans).ainvoke(initial, config)
     else:
         checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
         async with AsyncSqliteSaver.from_conn_string(str(checkpoint_path)) as saver:
-            state = await build_graph(backend, saver).ainvoke(initial, config)
+            state = await build_graph(backend, saver, phase_spans).ainvoke(initial, config)
     calls = sorted(backend.calls, key=lambda call: call.sequence)
     model_calls = [call for call in calls if call.provider is not BackendProvider.LOCAL]
     optional_calls = sum(
-        call.call_kind in {CallKind.ADJUDICATOR, CallKind.CHARACTER_REWRITE} for call in model_calls
+        call.call_kind in {CallKind.CRITIC, CallKind.ADJUDICATOR, CallKind.CHARACTER_REWRITE}
+        for call in model_calls
     )
     question_count = len(application.questions)
     validation = state["validation"]
@@ -360,7 +418,7 @@ async def run_resume_graph(
         total_cost_usd=round(sum(call.estimated_cost_usd or 0 for call in calls), 6),
         cost_complete=all(call.cost_status is not CostStatus.UNKNOWN for call in calls),
         price_catalog_version=backend.price_catalog_version,
-        prompt_versions={"core": "v0.5.0"},
+        prompt_versions={"core": "v0.6.0"},
         metadata={"character_rewrite_attempts": state.get("character_rewrite_attempts", [])},
         provider=backend.provider,
         billing_mode=backend.billing_mode,
@@ -375,9 +433,22 @@ async def run_resume_graph(
             "character_budget_gate",
             "deterministic_qa",
         ],
-        base_call_budget=10 + 4 * question_count,
+        base_call_budget=10 + 3 * question_count,
         optional_calls_used=optional_calls,
-        hard_call_cap=10 + 6 * question_count,
+        hard_call_cap=12 + 4 * question_count,
+        command_started_at=run_started_at,
+        completed_at=datetime.now(UTC),
+        wall_time_ms=int((time.perf_counter() - run_started) * 1000),
+        phase_spans=phase_spans,
+        network_status=(
+            "unknown"
+            if not model_calls
+            else (
+                "degraded"
+                if any(not call.success or (call.retry_count or 0) for call in model_calls)
+                else "healthy"
+            )
+        ),
     )
     return RunResult(
         run_id=resolved_run_id,
@@ -466,6 +537,10 @@ def _proposal_from_answer(answer: DraftAnswer) -> DraftProposal:
 
 def _question_dump(app: ApplicationInput, question_id: str) -> dict[str, Any]:
     return next(item.model_dump() for item in app.questions if item.question_id == question_id)
+
+
+def _outside_hard_gate(character_count: int, hard_min: int, hard_max: int) -> bool:
+    return character_count < hard_min or character_count > hard_max
 
 
 def _first_clause(text: str) -> str:
