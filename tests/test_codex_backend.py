@@ -1,15 +1,23 @@
+import asyncio
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
-from resume_factory.codex_backend import CodexCallBudgetExceeded, CodexExecBackend
+from resume_factory.codex_backend import (
+    CodexCallBudgetExceeded,
+    CodexExecBackend,
+    CodexNetworkDegradedError,
+)
 from resume_factory.config import Settings
 from resume_factory.schemas import (
+    AgentProposal,
     BackendProvider,
     BillingMode,
     CostStatus,
     ExecutionMode,
+    ModelTier,
 )
 
 
@@ -86,6 +94,101 @@ async def test_codex_call_budget_is_hard_capped(tmp_path: Path) -> None:
     await backend._reserve_call()
     with pytest.raises(CodexCallBudgetExceeded):
         await backend._reserve_call()
+
+
+async def test_codex_streaming_records_queue_and_first_event(tmp_path: Path) -> None:
+    executable = tmp_path / "fake-codex"
+    payload = json.dumps(_proposal_payload(), ensure_ascii=False)
+    executable.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, sys\n"
+        "sys.stdin.read()\n"
+        "print(json.dumps({'type':'thread.started','thread_id':'fake-thread'}), flush=True)\n"
+        f"print(json.dumps({{'type':'item.completed','item':{{'type':'agent_message',"
+        f"'text':{payload!r}}}}}), flush=True)\n"
+        "print(json.dumps({'type':'turn.completed','usage':{'input_tokens':10,"
+        "'cached_input_tokens':2,'output_tokens':3,'reasoning_output_tokens':1}}), flush=True)\n",
+        encoding="utf-8",
+    )
+    executable.chmod(0o755)
+    backend = CodexExecBackend(_settings(tmp_path), executable=str(executable))
+    backend.begin_run("stream-test")
+    proposal = await backend.propose(
+        role="analyst",
+        team="test",
+        brief={"evidence_ids": ["SYNTH-01"]},
+        tier=ModelTier.LUNA,
+    )
+    assert proposal.proposal_id == "p1"
+    call = backend.calls[0]
+    assert call.provider_run_id == "fake-thread"
+    assert call.process_started_at is not None
+    assert call.first_event_latency_ms is not None
+    assert call.provider_execution_ms is not None
+
+
+async def test_two_transient_attempts_become_network_degraded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    backend = CodexExecBackend(_settings(tmp_path), executable="/usr/bin/true")
+    backend.begin_run("network-test")
+
+    async def fail(*args):  # type: ignore[no-untyped-def]
+        raise OSError("temporary network/process failure")
+
+    async def no_wait(seconds: float) -> None:
+        assert seconds == 2
+
+    monkeypatch.setattr(backend, "_invoke", fail)
+    monkeypatch.setattr("resume_factory.codex_backend.asyncio.sleep", no_wait)
+    with pytest.raises(CodexNetworkDegradedError):
+        await backend.propose(
+            role="analyst",
+            team="test",
+            brief={},
+            tier=ModelTier.LUNA,
+        )
+    assert backend.calls[0].retry_count == 1
+
+
+async def test_codex_concurrency_never_exceeds_three(tmp_path: Path, monkeypatch) -> None:
+    backend = CodexExecBackend(
+        _settings(tmp_path), max_concurrency=3, hard_call_cap=10, executable="/usr/bin/true"
+    )
+    backend.begin_run("concurrency-test")
+    active = 0
+    maximum = 0
+
+    async def succeed(*args):  # type: ignore[no-untyped-def]
+        nonlocal active, maximum
+        active += 1
+        maximum = max(maximum, active)
+        await asyncio.sleep(0.01)
+        active -= 1
+        return (
+            AgentProposal.model_validate(_proposal_payload()),
+            {"input_tokens": 10, "output_tokens": 2},
+            "thread",
+            {
+                "process_started_at": datetime.now(UTC),
+                "first_event_latency_ms": 1,
+                "provider_execution_ms": 10,
+            },
+        )
+
+    monkeypatch.setattr(backend, "_invoke", succeed)
+    await asyncio.gather(
+        *(
+            backend.propose(
+                role=f"role-{index}",
+                team="test",
+                brief={},
+                tier=ModelTier.LUNA,
+            )
+            for index in range(6)
+        )
+    )
+    assert maximum == 3
 
 
 def test_codex_child_environment_drops_api_keys(monkeypatch: pytest.MonkeyPatch) -> None:

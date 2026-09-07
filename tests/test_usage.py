@@ -242,11 +242,19 @@ async def test_storage_migrates_and_persists_usage_rows(tmp_path: Path) -> None:
         usage_count = connection.execute("SELECT COUNT(*) FROM usage_runs").fetchone()
         call_count = connection.execute("SELECT COUNT(*) FROM model_calls").fetchone()
         migration = connection.execute(
-            "SELECT COUNT(*) FROM schema_migrations WHERE version = 2"
+            "SELECT COUNT(*) FROM schema_migrations WHERE version = 4"
         ).fetchone()
+        usage_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(usage_runs)").fetchall()
+        }
+        call_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(model_calls)").fetchall()
+        }
     assert usage_count == (1,)
     assert call_count == (len(result.telemetry.model_calls),)
     assert migration == (1,)
+    assert {"wall_time_ms", "phase_spans_json", "network_status"} <= usage_columns
+    assert {"queue_latency_ms", "first_event_latency_ms", "provider_execution_ms"} <= call_columns
 
 
 async def test_feedback_stores_only_hash_path_and_edit_ratios(tmp_path: Path) -> None:

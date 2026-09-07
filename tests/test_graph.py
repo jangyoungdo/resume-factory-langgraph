@@ -1,8 +1,8 @@
 from pathlib import Path
 
 from resume_factory.agents import DeterministicBackend
-from resume_factory.graph import run_resume_graph
-from resume_factory.schemas import ApplicationInput, ExecutionMode
+from resume_factory.graph import _outside_hard_gate, run_resume_graph
+from resume_factory.schemas import ApplicationInput, CallKind, ExecutionMode
 
 FIXTURE = Path(__file__).parent / "fixtures" / "sample_application.json"
 
@@ -71,3 +71,74 @@ async def test_graph_persists_sqlite_checkpoints(tmp_path: Path) -> None:
             "SELECT COUNT(*) FROM checkpoints WHERE thread_id = ?", ("checkpoint-test",)
         ).fetchone()[0]
     assert count >= 7
+
+
+def test_character_rewrite_uses_only_hard_gate() -> None:
+    assert not _outside_hard_gate(969, 950, 1000)
+    assert not _outside_hard_gate(983, 950, 1000)
+    assert _outside_hard_gate(949, 950, 1000)
+    assert _outside_hard_gate(1001, 950, 1000)
+
+
+async def test_common_analysis_starts_in_parallel() -> None:
+    class StartRecordingBackend(DeterministicBackend):
+        def __init__(self) -> None:
+            super().__init__()
+            self.started_roles: list[str] = []
+
+        async def propose(self, **kwargs):  # type: ignore[no-untyped-def]
+            self.started_roles.append(str(kwargs["role"]))
+            import asyncio
+
+            await asyncio.sleep(0.01)
+            return await super().propose(**kwargs)
+
+    application = ApplicationInput.model_validate_json(FIXTURE.read_text(encoding="utf-8"))
+    backend = StartRecordingBackend()
+    await run_resume_graph(application, backend, ExecutionMode.BALANCED)
+    assert set(backend.started_roles[:6]) == {
+        "business_analyst",
+        "job_demand_analyst",
+        "literal_question_analyst",
+        "recruiter_intent_analyst",
+        "evidence_transfer_analyst",
+        "positioning_strategist",
+    }
+
+
+async def test_clear_writing_candidates_skip_optional_critic() -> None:
+    class ClearMarginBackend(DeterministicBackend):
+        async def propose(self, **kwargs):  # type: ignore[no-untyped-def]
+            proposal = await super().propose(**kwargs)
+            if kwargs["role"] == "recruiter_value_writer":
+                proposal.score.relevance = 1.0
+                proposal.score.evidence_fidelity = 1.0
+            return proposal
+
+    application = ApplicationInput.model_validate_json(FIXTURE.read_text(encoding="utf-8"))
+    backend = ClearMarginBackend()
+    result = await run_resume_graph(application, backend, ExecutionMode.BALANCED)
+    critics = [call for call in backend.calls if call.call_kind is CallKind.CRITIC]
+    assert critics == []
+    assert result.telemetry.base_call_budget == 13
+
+
+async def test_multiple_failed_questions_use_one_character_repair_call() -> None:
+    application = ApplicationInput.model_validate_json(FIXTURE.read_text(encoding="utf-8"))
+    application.questions.extend(
+        [
+            application.questions[0].model_copy(
+                update={"question_id": "Q2", "text": "두 번째 문항"}
+            ),
+            application.questions[0].model_copy(
+                update={"question_id": "Q3", "text": "세 번째 문항"}
+            ),
+        ]
+    )
+    backend = DeterministicBackend()
+    result = await run_resume_graph(application, backend, ExecutionMode.BALANCED)
+    rewrites = [call for call in backend.calls if call.call_kind is CallKind.CHARACTER_REWRITE]
+    assert len(rewrites) == 1
+    assert result.telemetry.base_call_budget == 19
+    assert result.telemetry.hard_call_cap == 24
+    assert len(backend.calls) <= 24
