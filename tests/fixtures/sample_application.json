@@ -15,6 +15,7 @@
   "evidence": [
     {
       "event_id": "SYNTH-PHM-01",
+      "experience_key": "SYNTH_PDM_ANALYSIS",
       "title": "진동 데이터 기반 이상 후보 분석",
       "problem": "설비 신호만으로는 점검 대상을 일관되게 정하기 어려웠습니다.",
       "judgment": "모델 정확도보다 원신호와 진단 후보를 함께 검증해야 현장 판단에 사용할 수 있다",
@@ -37,4 +38,3 @@
   ],
   "eligibility_notes": ["필수 자격의 최종 취득 여부를 제출 전에 확인해야 합니다."]
 }
-

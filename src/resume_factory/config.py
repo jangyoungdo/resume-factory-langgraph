@@ -23,7 +23,7 @@ class Settings:
     mlflow_tracking_uri: str
     local_dir: Path
     backend: str = "codex"
-    codex_max_concurrency: int = 2
+    codex_max_concurrency: int = 3
     codex_timeout_seconds: float = 180
 
     @classmethod
@@ -43,7 +43,7 @@ class Settings:
             mlflow_tracking_uri=os.getenv("RF_MLFLOW_TRACKING_URI", "sqlite:///.local/mlflow.db"),
             local_dir=base / ".local",
             backend=os.getenv("RF_BACKEND", "codex"),
-            codex_max_concurrency=int(os.getenv("RF_CODEX_MAX_CONCURRENCY", "2")),
+            codex_max_concurrency=int(os.getenv("RF_CODEX_MAX_CONCURRENCY", "3")),
             codex_timeout_seconds=float(os.getenv("RF_CODEX_TIMEOUT_SECONDS", "180")),
         )
 

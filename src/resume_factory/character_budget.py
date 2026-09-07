@@ -82,10 +82,6 @@ def _candidate_plans(
         (SentenceRole.RESULT, text, "추가로 확인된 결과", evidence.event_id)
         for text in evidence.results[1:]
     )
-    raw.extend(
-        (SentenceRole.BOUNDARY, text, "경험의 적용 한계", evidence.event_id)
-        for text in evidence.boundaries[:2]
-    )
     if evidence.capabilities:
         capabilities = "과 ".join(evidence.capabilities[:2])
         raw.append(
@@ -112,14 +108,8 @@ def _candidate_plans(
             ),
             (
                 SentenceRole.CAUSAL_BRIDGE,
-                "판단 전제도 기록했습니다.",
+                "전제도 기록했습니다.",
                 "판단을 재검토할 수 있는 기록",
-                evidence.event_id,
-            ),
-            (
-                SentenceRole.BOUNDARY,
-                transfer.boundary,
-                "직무 전이의 사실 경계",
                 evidence.event_id,
             ),
         ]
@@ -180,7 +170,6 @@ def _merge_additions(
         SentenceRole.DIFFERENTIATION: SentenceRole.DIFFERENTIATION,
         SentenceRole.COMPANY_NEED: SentenceRole.COMPANY_NEED,
         SentenceRole.CAUSAL_BRIDGE: SentenceRole.JUDGMENT,
-        SentenceRole.BOUNDARY: SentenceRole.TRANSFER,
     }
     merged = [item.model_copy(deep=True) for item in plans]
     for addition in additions:

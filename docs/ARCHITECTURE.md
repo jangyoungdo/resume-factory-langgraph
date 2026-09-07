@@ -27,3 +27,15 @@ Resume Factory는 초안과 검토 자료만 만든다. 최종 제출, 사용자
 모든 자소서 문장은 역할, selling point, 근거 ID, claim ID, 회사 연결과 면접 방어 가능성을
 기록한다.
 
+## Human editorial policy
+
+- 교육용·가상·프로젝트 등 사실 범위는 사건을 처음 소개할 때 긍정형 맥락으로 한 번만 쓴다.
+- 미측정 값과 수행 경계는 근거 원장과 `interview_defense`에 계속 보존한다. 다만 이미 정확한
+  맥락을 밝힌 뒤 독자에게 새 정보를 주지 않는 보험 문장은 제출 본문에서 제거한다.
+- 판단과 관점은 구체적인 기술 구조, 입출력, 제어 조건 또는 검증 행동으로 이어져야 하며,
+  뒤에는 관찰 가능한 결과가 있어야 한다. `좋은 결과` 같은 자체 평가는 통과하지 않는다.
+- 배움을 묻는 문항은 섹션명이나 영문 라벨을 흉내 내지 않는다. 선택적으로 승인된 보조
+  evidence를 사용해 후행 프로젝트에서 같은 판단 방식을 재적용한 행동과 결과를 1~2문장으로
+  증명한다. 다른 문항의 기술 설명은 반복하지 않는다.
+- 위반은 `LOW_VALUE_DEFENSIVE_CAVEAT`, `REPEATED_SCOPE_QUALIFIER`, `VAGUE_RESULT`,
+  `NO_ACTION_RESULT_CHAIN`, `LEARNING_TRANSFER_MISSING` 품질 코드로 기록한다.

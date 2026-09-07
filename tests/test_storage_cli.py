@@ -4,6 +4,7 @@ from typer.testing import CliRunner
 
 from resume_factory.agents import DeterministicBackend
 from resume_factory.cli import app
+from resume_factory.config import Settings
 from resume_factory.graph import run_resume_graph
 from resume_factory.schemas import ApplicationInput, ExecutionMode
 from resume_factory.storage import RunStore
@@ -60,3 +61,63 @@ async def test_usage_cli_lists_shows_and_compares_runs(tmp_path: Path, monkeypat
     assert "Quality is shown as a vector" in compared.output
     assert feedback.exit_code == 0
     assert store.load_feedback("usage-one")["rating"] == 5  # type: ignore[index]
+
+
+def test_execute_creates_review_without_git(tmp_path: Path, monkeypatch) -> None:
+    application = ApplicationInput.model_validate_json(FIXTURE.read_text(encoding="utf-8"))
+    settings = Settings(
+        model_luna="gpt-5.6-luna",
+        model_terra="gpt-5.6-terra",
+        model_sol="gpt-5.6-sol",
+        execution_mode=ExecutionMode.BALANCED,
+        dual_brain_root=None,
+        notion_snapshot_dir=None,
+        notion_token=None,
+        openai_api_key=None,
+        enable_mlflow=False,
+        mlflow_tracking_uri=f"sqlite:///{tmp_path / 'mlflow.db'}",
+        local_dir=tmp_path / ".local",
+    )
+
+    async def fake_load(application_id: str, phase_spans=None):  # type: ignore[no-untyped-def]
+        assert application_id == "sample"
+        return application
+
+    def reject_git(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("execute must not invoke subprocess/Git")
+
+    monkeypatch.setattr("resume_factory.cli.load_application_from_mcp", fake_load)
+    monkeypatch.setattr(Settings, "from_env", classmethod(lambda cls: settings))
+    monkeypatch.setattr("resume_factory.cli.subprocess.run", reject_git)
+    result = CliRunner().invoke(
+        app,
+        [
+            "execute",
+            "--application-id",
+            "sample",
+            "--backend",
+            "offline",
+            "--output",
+            "json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert '"git_invoked": false' in result.output
+    assert list((settings.local_dir / "deliverables").glob("*.md"))
+
+
+async def test_performance_cli_reads_v07_timeline(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    application = ApplicationInput.model_validate_json(FIXTURE.read_text(encoding="utf-8"))
+    result = await run_resume_graph(
+        application, DeterministicBackend(), ExecutionMode.BALANCED, run_id="perf-one"
+    )
+    RunStore(tmp_path / ".local").save(result)
+    shown = CliRunner().invoke(app, ["performance", "show", "perf-one", "--timeline"])
+    summary = CliRunner().invoke(app, ["performance", "summary", "--limit", "10"])
+    assert shown.exit_code == 0
+    assert '"graph_version": "v0.7"' in shown.output
+    assert "company_job_intelligence" in shown.output
+    assert summary.exit_code == 0
+    assert '"status": "provisional"' in summary.output
+    assert '"healthy_runs": 0' in summary.output
