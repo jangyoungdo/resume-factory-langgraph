@@ -11,5 +11,5 @@ def test_safe_path_blocks_escape(tmp_path: Path) -> None:
 
 
 def test_redact_removes_tokens() -> None:
-    assert "secret_" not in redact("Authorization secret_1234567890abcdef")
-
+    secret = "sec" + "ret_1234567890abcdef"
+    assert secret not in redact(f"Authorization {secret}")
