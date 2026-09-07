@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from typing import Any
+from typing import Any, cast
 
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
@@ -32,7 +32,9 @@ async def load_tools_isolated(
     health: dict[str, str] = {}
     for server_name, config in (configs or server_configs()).items():
         try:
-            client = MultiServerMCPClient({server_name: config}, tool_name_prefix=True)
+            client = MultiServerMCPClient(
+                cast(Any, {server_name: config}), tool_name_prefix=True
+            )
             server_tools = await asyncio.wait_for(client.get_tools(), timeout_seconds)
             tools.extend(server_tools)
             health[server_name] = "healthy"

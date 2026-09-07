@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 from mcp.server.fastmcp import FastMCP
@@ -32,7 +32,9 @@ def _load_records() -> list[dict[str, Any]]:
 
 
 @mcp.tool()
-def search_evidence(query: str, capabilities: list[str] | None = None, top_k: int = 5) -> dict:
+def search_evidence(
+    query: str, capabilities: list[str] | None = None, top_k: int = 5
+) -> dict[str, Any]:
     """Search the private, curated evidence index without exposing arbitrary files."""
     records = _load_records()
     semantic = _semantic_rank(query, records, top_k)
@@ -75,7 +77,7 @@ def _semantic_rank(
 
 
 @mcp.tool()
-def get_evidence_event(event_id: str) -> dict:
+def get_evidence_event(event_id: str) -> dict[str, Any]:
     """Return one curated evidence event by immutable ID."""
     for record in _load_records():
         if record.get("event_id") == event_id:
@@ -84,7 +86,7 @@ def get_evidence_event(event_id: str) -> dict:
 
 
 @mcp.tool()
-def get_numeric_authority(authority_id: str) -> dict:
+def get_numeric_authority(authority_id: str) -> dict[str, Any]:
     """Return a verified numeric authority by ID."""
     for record in _load_records():
         for authority in record.get("numeric_authorities", []):
@@ -94,11 +96,11 @@ def get_numeric_authority(authority_id: str) -> dict:
 
 
 @mcp.tool()
-def get_project_boundary(event_id: str) -> dict:
+def get_project_boundary(event_id: str) -> dict[str, Any]:
     """Return contribution boundaries and forbidden event combinations."""
     record = get_evidence_event(event_id)
     if "error" in record:
-        return record
+        return cast(dict[str, Any], record)
     return {
         "event_id": event_id,
         "boundaries": record.get("boundaries", []),
@@ -107,14 +109,14 @@ def get_project_boundary(event_id: str) -> dict:
 
 
 @mcp.tool()
-def get_previous_feedback(company: str, question_type: str) -> dict:
+def get_previous_feedback(company: str, question_type: str) -> dict[str, Any]:
     """Read feedback scoped to the same company and question type."""
     feedback_path = safe_path(
         _root(), _root() / ".resume_factory" / "feedback" / "feedback.jsonl"
     )
     if not feedback_path.exists():
         return {"results": []}
-    results = []
+    results: list[dict[str, Any]] = []
     for line in feedback_path.read_text(encoding="utf-8").splitlines():
         item = json.loads(line)
         if item.get("company") == company and item.get("question_type") == question_type:

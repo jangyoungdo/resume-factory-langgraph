@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import re
 from collections import Counter
+from collections.abc import Mapping
 
 from .schemas import (
     ApplicationInput,
     DraftAnswer,
+    EvidencePacket,
     SentenceRole,
     ValidationIssue,
     ValidationReport,
@@ -146,7 +148,7 @@ def validate_answers(application: ApplicationInput, answers: list[DraftAnswer]) 
 
 def _validate_forbidden_combinations(
     answer: DraftAnswer,
-    evidence_by_id: dict[str, object],
+    evidence_by_id: Mapping[str, EvidencePacket],
     issues: list[ValidationIssue],
 ) -> None:
     used = set(answer.evidence_ids)

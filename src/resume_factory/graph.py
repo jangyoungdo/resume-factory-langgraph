@@ -11,6 +11,7 @@ from .schemas import (
     ApplicationInput,
     DemandBrief,
     DraftAnswer,
+    EvidencePacket,
     ExecutionMode,
     PositioningBrief,
     QuestionContract,
@@ -41,7 +42,7 @@ class ResumeGraphState(TypedDict, total=False):
     validation: Any
 
 
-def build_graph(backend: AgentBackend):
+def build_graph(backend: AgentBackend) -> Any:
     async def intelligence(state: ResumeGraphState) -> dict[str, Any]:
         app = state["application"]
         evidence_ids = [item.event_id for item in app.evidence]
@@ -286,7 +287,12 @@ async def run_resume_graph(
     )
 
 
-def _compose_grounded_answer(question_id, app, evidence, transfer) -> DraftAnswer:
+def _compose_grounded_answer(
+    question_id: str,
+    app: ApplicationInput,
+    evidence: EvidencePacket,
+    transfer: TransferContract,
+) -> DraftAnswer:
     sentences = [
         (
             SentenceRole.ANSWER,

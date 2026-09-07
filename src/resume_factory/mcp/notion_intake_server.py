@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from mcp.server.fastmcp import FastMCP
 from notion_client import Client
@@ -34,7 +34,7 @@ def _load(application_id: str) -> dict[str, Any]:
         path = _application_path(application_id)
         if not path.exists():
             return {"error": "not_found", "application_id": application_id}
-        return json.loads(path.read_text(encoding="utf-8"))
+        return cast(dict[str, Any], json.loads(path.read_text(encoding="utf-8")))
     token = os.getenv("RF_NOTION_TOKEN")
     if token:
         return _load_from_notion(application_id, token)
@@ -44,10 +44,11 @@ def _load(application_id: str) -> dict[str, Any]:
 def _load_from_notion(application_id: str, token: str) -> dict[str, Any]:
     """Normalize a read-only Notion page without persisting its private content."""
     client = Client(auth=token)
-    page = client.pages.retrieve(page_id=application_id)
-    blocks = client.blocks.children.list(block_id=application_id, page_size=100).get(
-        "results", []
+    page = cast(dict[str, Any], client.pages.retrieve(page_id=application_id))
+    block_response = cast(
+        dict[str, Any], client.blocks.children.list(block_id=application_id, page_size=100)
     )
+    blocks = cast(list[dict[str, Any]], block_response.get("results", []))
     properties = page.get("properties", {})
     return {
         "application_id": application_id,
@@ -72,13 +73,16 @@ def _first_property(properties: dict[str, Any], names: tuple[str, ...]) -> str |
 
 def _property_text(prop: dict[str, Any]) -> str | None:
     prop_type = prop.get("type")
+    if not isinstance(prop_type, str):
+        return None
     value = prop.get(prop_type, {})
     if prop_type in {"title", "rich_text"}:
         return "".join(item.get("plain_text", "") for item in value)
     if prop_type in {"select", "status"}:
-        return (value or {}).get("name")
+        selected = (value or {}).get("name")
+        return str(selected) if selected is not None else None
     if prop_type == "url":
-        return value
+        return str(value) if value is not None else None
     if prop_type == "number":
         return str(value) if value is not None else None
     return None
@@ -88,6 +92,8 @@ def _blocks_to_text(blocks: list[dict[str, Any]]) -> str:
     lines: list[str] = []
     for block in blocks:
         block_type = block.get("type")
+        if not isinstance(block_type, str):
+            continue
         content = block.get(block_type, {})
         rich_text = content.get("rich_text", []) if isinstance(content, dict) else []
         text = "".join(item.get("plain_text", "") for item in rich_text).strip()
@@ -97,13 +103,13 @@ def _blocks_to_text(blocks: list[dict[str, Any]]) -> str:
 
 
 @mcp.tool()
-def get_application(application_id: str) -> dict:
+def get_application(application_id: str) -> dict[str, Any]:
     """Return a private application snapshot without mutating Notion."""
     return _load(application_id)
 
 
 @mcp.tool()
-def get_job_description(application_id: str) -> dict:
+def get_job_description(application_id: str) -> dict[str, Any]:
     """Return company, job, and JD fields from a snapshot."""
     record = _load(application_id)
     if "error" in record:
@@ -117,7 +123,7 @@ def get_job_description(application_id: str) -> dict:
 
 
 @mcp.tool()
-def get_application_questions(application_id: str) -> dict:
+def get_application_questions(application_id: str) -> dict[str, Any]:
     """Return application questions and character limits."""
     record = _load(application_id)
     if "error" in record:
@@ -126,7 +132,7 @@ def get_application_questions(application_id: str) -> dict:
 
 
 @mcp.tool()
-def get_existing_draft(application_id: str) -> dict:
+def get_existing_draft(application_id: str) -> dict[str, Any]:
     """Return an existing draft as read-only context."""
     record = _load(application_id)
     if "error" in record:

@@ -288,7 +288,7 @@ async def _finalize_team(state: TeamRunState) -> dict[str, Any]:
     }
 
 
-def _build_team_subgraph():
+def _build_team_subgraph() -> Any:
     builder = StateGraph(TeamRunState)
     builder.add_node("prepare", _prepare_team)
     builder.add_node("specialist", _run_specialist)
