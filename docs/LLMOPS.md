@@ -12,6 +12,9 @@ rf usage show RUN_ID --group-by question
 rf usage show RUN_ID --group-by team
 rf usage show RUN_ID --group-by agent --json
 rf usage compare RUN_A RUN_B --group-by model
+rf performance show RUN_ID
+rf performance show RUN_ID --timeline
+rf performance summary --limit 10
 ```
 
 Shared company, job, integration, and aggregate QA calls appear under `shared`; the system does
@@ -48,3 +51,14 @@ stored. The final text is not copied into the telemetry database.
 `src/resume_factory/model_prices.json` contains versioned planning estimates. They are not provider
 billing records. Verify the exact model IDs and rates before online use. An unknown model produces
 `cost_complete=false` and `unknown_price_calls`; it never silently appears as a zero-cost model.
+
+## Latency and network interpretation
+
+`rf performance show` separates command wall time, MCP startup/read phases, LangGraph nodes,
+Codex queue time, provider execution, and delivery. `first_event_latency_ms` is provider response
+wait and can include network plus service scheduling; it is not labelled as pure network latency.
+Transient process/network failures retry once after two seconds. Two consecutive failures stop the
+run as `network_degraded` so the private checkpoint can be resumed without an API fallback.
+
+Application execution never invokes Git or CI. Source commits, push, PR, and regression CI belong
+to a separate release workflow and are excluded from the 30-minute application SLA.

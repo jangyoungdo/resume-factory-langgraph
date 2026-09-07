@@ -29,22 +29,22 @@ API 키 없이 `--offline`으로 회귀 테스트를 재현할 수 있습니다.
 ```bash
 codex login
 rf doctor --backend codex
-rf run --application-id <private-id> --backend codex --mode balanced
-rf deliver <run-id>
+rf execute --application-id <private-id> --backend codex --mode balanced --output json
 rf install-codex-skill
 ```
 
 ## 글자 수 품질 게이트
 
 제출 문자열은 `[소제목]\n본문`으로 정규화하며 줄바꿈 한 글자를 포함합니다. 문항 제한의
-95% 미만 또는 100% 초과는 hard fail이고, 생성기는 97~98%를 목표로 한 번만 선택적으로
-보강합니다. 보강 문장도 기존 evidence ID와 문장 역할을 유지하며 일반론으로 분량을 채우지
-않습니다.
+95% 미만 또는 100% 초과만 재작성 대상입니다. 97~98%는 생성 목표이지만 Hard Gate 안의
+문항을 다시 쓰는 조건은 아닙니다. 여러 문항이 Hard Gate를 벗어나도 Terra의 배치 호출
+한 번으로만 복구하며, 기존 evidence ID와 문장 역할을 유지합니다.
 
 ## CLI
 
 ```text
 rf doctor --backend codex
+rf execute --application-id <private-id> --backend codex --mode balanced --output json
 rf index --source <private-evidence-directory>
 rf run --application-id <private-id> --backend codex --mode balanced
 rf run --input <private-application-snapshot.json> --backend offline
@@ -55,16 +55,21 @@ rf render-draft --input <private-submission.json> --output <new-private-draft.md
 rf usage list
 rf usage show <run-id> --group-by question
 rf usage compare <run-a> <run-b> --group-by model
+rf performance show <run-id> --timeline
+rf performance summary --limit 10
 rf feedback <run-id> --decision revised --rating 4 --final-draft <private-final.json>
 rf eval --suite golden
 rf diagram
 rf install-codex-skill
 ```
 
-v0.5의 3문항 balanced 실행은 회사·직무 3회, 질문 전략 3회, 경험·브랜딩 3회,
-문항별 작성위원회 12회, 통합 편집 1회로 기본 22회입니다. 글자 수 재작성과 Sol 판정은
-합계 6회 이내이며 전체 상한은 28회입니다. 최종 문장은 작성위원회의
+v0.6의 3문항 balanced 실행은 공통 분석 9회, 작성자 2명과 편집장 9회, 통합 편집
+1회로 기본 19회입니다. 익명 비평은 후보 충돌 때만 실행하고, 글자 수 복구는 배치 1회,
+Sol은 실행당 1회로 제한해 전체 상한은 24회입니다. 최종 문장은 작성위원회의
 `DraftProposal.sentence_plans`에서 직접 조립되어 근거 계보를 유지합니다.
+
+`rf execute`에는 Git·push·PR·CI가 없으며 비공개 산출물 생성까지 한 프로세스에서 끝납니다.
+코드 버전 관리는 기능 릴리스 때만 별도 수행합니다.
 
 토큰·비용·사용자 수정률 모니터링은 `docs/LLMOPS.md`, 아키텍처와 운영 결정은 `docs/`를
 참고하십시오.
