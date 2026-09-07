@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import re
 from collections import Counter
 from collections.abc import Mapping
@@ -31,12 +32,35 @@ def validate_answers(application: ApplicationInput, answers: list[DraftAnswer]) 
     }
 
     for answer in answers:
-        if answer.character_count > question_limits[answer.question_id]:
+        limit = question_limits[answer.question_id]
+        hard_min = math.ceil(limit * 0.95)
+        target_min = math.ceil(limit * 0.97)
+        target_max = math.floor(limit * 0.98)
+        if answer.character_count < hard_min:
+            issues.append(
+                ValidationIssue(
+                    code="CHARACTER_UNDERFILL",
+                    severity="hard_fail",
+                    message=f"{answer.character_count}/{limit}자; 최소 {hard_min}자",
+                )
+            )
+        elif not target_min <= answer.character_count <= target_max:
+            issues.append(
+                ValidationIssue(
+                    code="CHARACTER_TARGET_MISS",
+                    severity="warning",
+                    message=(
+                        f"{answer.character_count}/{limit}자; "
+                        f"권장 목표 {target_min}~{target_max}자"
+                    ),
+                )
+            )
+        if answer.character_count > limit:
             issues.append(
                 ValidationIssue(
                     code="CHARACTER_LIMIT",
                     severity="hard_fail",
-                    message=f"{answer.character_count}/{question_limits[answer.question_id]}자",
+                    message=f"{answer.character_count}/{limit}자",
                 )
             )
         if not answer.sentence_plans:
@@ -125,7 +149,18 @@ def validate_answers(application: ApplicationInput, answers: list[DraftAnswer]) 
         "evidence_action_result_ratio": sum(role_counts[r] for r in evidence_roles) / total,
         "perspective_differentiation_ratio": sum(role_counts[r] for r in perspective_roles) / total,
         "company_transfer_ratio": sum(role_counts[r] for r in transfer_roles) / total,
+        "character_target_hit_count": sum(
+            math.ceil(question_limits[item.question_id] * 0.97)
+            <= item.character_count
+            <= math.floor(question_limits[item.question_id] * 0.98)
+            for item in answers
+        ),
     }
+    for answer in answers:
+        metrics[f"{answer.question_id}_character_count"] = answer.character_count
+        metrics[f"{answer.question_id}_character_utilization"] = round(
+            answer.character_count / question_limits[answer.question_id], 4
+        )
     ratio_limits = (
         ("EVIDENCE_RATIO", metrics["evidence_action_result_ratio"], 0.50, 0.60),
         ("PERSPECTIVE_RATIO", metrics["perspective_differentiation_ratio"], 0.20, 0.25),

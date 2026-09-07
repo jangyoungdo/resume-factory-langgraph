@@ -3,7 +3,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, computed_field, model_validator
 
 
 class ExecutionMode(StrEnum):
@@ -154,6 +154,22 @@ class QuestionContract(BaseModel):
     likely_objections: list[str]
     forbidden_generic_claims: list[str]
     character_budget: int
+    character_limit: int | None = None
+    character_hard_min: int | None = None
+    character_target_min: int | None = None
+    character_target_max: int | None = None
+    counting_policy: Literal["headline_newline_body"] = "headline_newline_body"
+
+    @model_validator(mode="after")
+    def populate_character_bounds(self) -> QuestionContract:
+        import math
+
+        limit = self.character_limit or self.character_budget
+        self.character_limit = limit
+        self.character_hard_min = self.character_hard_min or math.ceil(limit * 0.95)
+        self.character_target_min = self.character_target_min or math.ceil(limit * 0.97)
+        self.character_target_max = self.character_target_max or math.floor(limit * 0.98)
+        return self
 
 
 class TransferContract(BaseModel):
@@ -195,10 +211,26 @@ class DraftAnswer(BaseModel):
     body: str
     sentence_plans: list[SentencePlan]
     evidence_ids: list[str]
+    character_limit: int | None = None
 
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def submission_text(self) -> str:
+        headline = self.headline.strip().replace("\r\n", "\n").replace("\r", "\n")
+        body = self.body.strip().replace("\r\n", "\n").replace("\r", "\n")
+        return f"{headline}\n{body}" if headline else body
+
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def character_count(self) -> int:
-        return len(self.headline) + len(self.body)
+        return len(self.submission_text)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def utilization_ratio(self) -> float | None:
+        if not self.character_limit:
+            return None
+        return round(self.character_count / self.character_limit, 4)
 
 
 class ValidationIssue(BaseModel):
@@ -247,3 +279,41 @@ class RunResult(BaseModel):
     team_decisions: list[TeamDecision]
     eligibility_warnings: list[str]
     telemetry: RunTelemetry
+
+
+class SubmissionAnswer(BaseModel):
+    question_id: str
+    prompt: str
+    character_limit: int
+    headline: str = ""
+    body: str
+    evidence_ids: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def submission_text(self) -> str:
+        headline = self.headline.strip().replace("\r\n", "\n").replace("\r", "\n")
+        body = self.body.strip().replace("\r\n", "\n").replace("\r", "\n")
+        return f"{headline}\n{body}" if headline else body
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def character_count(self) -> int:
+        return len(self.submission_text)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def utilization_ratio(self) -> float:
+        return round(self.character_count / self.character_limit, 4)
+
+
+class SubmissionBundle(BaseModel):
+    company: str
+    job: str
+    revision: int = Field(ge=1)
+    source_run_id: str
+    status: Literal["user_review", "approved"] = "user_review"
+    answers: list[SubmissionAnswer]
+    eligibility_warnings: list[str] = Field(default_factory=list)
+    actual_submission_performed: bool = False

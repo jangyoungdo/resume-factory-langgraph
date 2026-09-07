@@ -25,16 +25,23 @@ rf run --input tests/fixtures/sample_application.json --offline
 API 키 없이 `--offline`으로 전체 그래프와 품질 게이트를 재현할 수 있습니다. 실제 모델을
 사용하려면 `.env`에 `OPENAI_API_KEY`를 설정합니다.
 
+## 글자 수 품질 게이트
+
+제출 문자열은 `[소제목]\n본문`으로 정규화하며 줄바꿈 한 글자를 포함합니다. 문항 제한의
+95% 미만 또는 100% 초과는 hard fail이고, 생성기는 97~98%를 목표로 한 번만 선택적으로
+보강합니다. 보강 문장도 기존 evidence ID와 문장 역할을 유지하며 일반론으로 분량을 채우지
+않습니다.
+
 ## CLI
 
 ```text
 rf doctor
 rf index --source <private-evidence-directory>
 rf run --input <private-application-snapshot.json> [--offline]
-rf review --run-id <id>
+rf review <run-id>
+rf render-draft --input <private-submission.json> --output <new-private-draft.md>
 rf eval --suite golden
 rf diagram
 ```
 
 아키텍처와 운영 결정은 `docs/`를 참고하십시오.
-
