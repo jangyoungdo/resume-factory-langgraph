@@ -1,0 +1,12 @@
+{
+  "name": "resume-factory-architecture-docs",
+  "private": true,
+  "scripts": {
+    "diagrams": "npm run diagram:overview && npm run diagram:teams",
+    "diagram:overview": "mmdc -i docs/architecture/vertical-ai-overview.mmd -o docs/architecture/vertical-ai-overview.svg -b transparent && mmdc -i docs/architecture/vertical-ai-overview.mmd -o docs/architecture/vertical-ai-overview.png -b white -w 1920 -H 1080",
+    "diagram:teams": "mmdc -i docs/architecture/multi-agent-team-flow.mmd -o docs/architecture/multi-agent-team-flow.svg -b transparent && mmdc -i docs/architecture/multi-agent-team-flow.mmd -o docs/architecture/multi-agent-team-flow.png -b white -w 1920 -H 1080"
+  },
+  "devDependencies": {
+    "@mermaid-js/mermaid-cli": "11.17.0"
+  }
+}
