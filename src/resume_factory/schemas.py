@@ -279,3 +279,41 @@ class RunResult(BaseModel):
     team_decisions: list[TeamDecision]
     eligibility_warnings: list[str]
     telemetry: RunTelemetry
+
+
+class SubmissionAnswer(BaseModel):
+    question_id: str
+    prompt: str
+    character_limit: int
+    headline: str = ""
+    body: str
+    evidence_ids: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def submission_text(self) -> str:
+        headline = self.headline.strip().replace("\r\n", "\n").replace("\r", "\n")
+        body = self.body.strip().replace("\r\n", "\n").replace("\r", "\n")
+        return f"{headline}\n{body}" if headline else body
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def character_count(self) -> int:
+        return len(self.submission_text)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def utilization_ratio(self) -> float:
+        return round(self.character_count / self.character_limit, 4)
+
+
+class SubmissionBundle(BaseModel):
+    company: str
+    job: str
+    revision: int = Field(ge=1)
+    source_run_id: str
+    status: Literal["user_review", "approved"] = "user_review"
+    answers: list[SubmissionAnswer]
+    eligibility_warnings: list[str] = Field(default_factory=list)
+    actual_submission_performed: bool = False

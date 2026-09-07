@@ -13,6 +13,7 @@ from rich.table import Table
 
 from .agents import DeterministicBackend, OpenAIBackend
 from .config import Settings
+from .deliverables import render_bundle_file
 from .graph import run_resume_graph
 from .indexing import build_curated_index
 from .schemas import ApplicationInput, ExecutionMode
@@ -87,6 +88,19 @@ def review(run_id: str) -> None:
     """Show evidence, warnings, validation, and model cost for one run."""
     result = RunStore(Settings.from_env().local_dir).load(run_id)
     console.print_json(result.model_dump_json(indent=2))
+
+
+@app.command("render-draft")
+def render_draft(
+    input: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    output: Annotated[Path, typer.Option(dir_okay=False)],
+) -> None:
+    """Render a canonical private submission JSON into a non-overwriting Markdown file."""
+    try:
+        path = render_bundle_file(input.resolve(), output.resolve())
+    except (ValueError, FileExistsError) as error:
+        raise typer.BadParameter(str(error)) from error
+    console.print(f"rendered={path}")
 
 
 @app.command("eval")

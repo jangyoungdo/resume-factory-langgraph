@@ -39,6 +39,7 @@ rf doctor
 rf index --source <private-evidence-directory>
 rf run --input <private-application-snapshot.json> [--offline]
 rf review <run-id>
+rf render-draft --input <private-submission.json> --output <new-private-draft.md>
 rf eval --suite golden
 rf diagram
 ```
