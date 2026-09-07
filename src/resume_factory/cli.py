@@ -6,6 +6,7 @@ import platform
 import shutil
 import subprocess
 import sys
+import uuid
 from datetime import date
 from pathlib import Path
 from typing import Annotated, cast
@@ -127,12 +128,22 @@ def run(
         raise typer.BadParameter("backend must be offline, codex, or openai")
     selected_mode = mode or settings.execution_mode
     tracker = Tracker(settings)
+    run_id = uuid.uuid4().hex[:12]
+    input_path = settings.local_dir / "runs" / f"{run_id}.input.json"
+    input_path.parent.mkdir(parents=True, exist_ok=True)
+    input_path.write_text(application_input.model_dump_json(indent=2), encoding="utf-8")
     with tracker.run(f"{application_input.company}-{application_input.job}"):
-        result = asyncio.run(run_resume_graph(application_input, agent_backend, selected_mode))
+        result = asyncio.run(
+            run_resume_graph(
+                application_input,
+                agent_backend,
+                selected_mode,
+                run_id=run_id,
+                checkpoint_path=settings.local_dir / "checkpoints.sqlite",
+            )
+        )
         tracker.log_result(result)
     path = RunStore(settings.local_dir).save(result)
-    input_path = settings.local_dir / "runs" / f"{result.run_id}.input.json"
-    input_path.write_text(application_input.model_dump_json(indent=2), encoding="utf-8")
     console.print(f"run_id={result.run_id} status={result.status} saved={path}")
 
 
@@ -152,7 +163,14 @@ def resume(run_id: str) -> None:
     )
     asyncio.run(agent_backend.verify_chatgpt_auth())
     result = asyncio.run(
-        run_resume_graph(application_input, agent_backend, settings.execution_mode)
+        run_resume_graph(
+            application_input,
+            agent_backend,
+            settings.execution_mode,
+            run_id=run_id,
+            checkpoint_path=settings.local_dir / "checkpoints.sqlite",
+            resume=True,
+        )
     )
     path = RunStore(settings.local_dir).save(result)
     console.print(f"resumed_from={run_id} run_id={result.run_id} saved={path}")

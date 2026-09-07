@@ -51,3 +51,23 @@ async def test_questions_can_select_distinct_evidence_packets() -> None:
     assert result.answers[0].evidence_ids == ["SYNTH-PHM-01"]
     assert result.answers[1].evidence_ids == ["SYNTH-LEAD-02"]
     assert result.transfer_contracts[1].evidence_event_id == "SYNTH-LEAD-02"
+
+
+async def test_graph_persists_sqlite_checkpoints(tmp_path: Path) -> None:
+    application = ApplicationInput.model_validate_json(FIXTURE.read_text(encoding="utf-8"))
+    checkpoint = tmp_path / "checkpoints.sqlite"
+    await run_resume_graph(
+        application,
+        DeterministicBackend(),
+        ExecutionMode.BALANCED,
+        run_id="checkpoint-test",
+        checkpoint_path=checkpoint,
+    )
+    assert checkpoint.exists()
+    import sqlite3
+
+    with sqlite3.connect(checkpoint) as connection:
+        count = connection.execute(
+            "SELECT COUNT(*) FROM checkpoints WHERE thread_id = ?", ("checkpoint-test",)
+        ).fetchone()[0]
+    assert count >= 7
