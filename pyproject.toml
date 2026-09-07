@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "resume-factory-langgraph"
-version = "0.4.0"
+version = "0.5.0"
 description = "Evidence-grounded multi-agent cover-letter workflow built with LangGraph and MCP"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"

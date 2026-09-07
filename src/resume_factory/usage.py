@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from .schemas import (
+    CostStatus,
     FeedbackDecision,
     HumanFeedback,
     ModelCallRecord,
@@ -44,6 +45,16 @@ def usage_report(result: RunResult, group_by: GroupBy = "team") -> dict[str, Any
         "mode": result.telemetry.mode.value,
         "price_catalog_version": result.telemetry.price_catalog_version,
         "cost_complete": result.telemetry.cost_complete,
+        "provider": result.telemetry.provider.value,
+        "billing_mode": result.telemetry.billing_mode.value,
+        "cost_status": result.telemetry.cost_status.value,
+        "graph_version": result.telemetry.graph_version,
+        "graph_nodes_completed": result.telemetry.graph_nodes_completed,
+        "call_budget": {
+            "base": result.telemetry.base_call_budget,
+            "optional_used": result.telemetry.optional_calls_used,
+            "hard_cap": result.telemetry.hard_call_cap,
+        },
         "character_rewrite_count": len(
             result.telemetry.metadata.get("character_rewrite_attempts", [])
         ),
@@ -108,6 +119,7 @@ def _group_key(call: ModelCallRecord, group_by: GroupBy) -> str:
 
 def _aggregate_row(key: str, calls: list[ModelCallRecord]) -> dict[str, Any]:
     known_cost = round(sum(call.estimated_cost_usd or 0 for call in calls), 8)
+    cost_applicable = any(call.cost_status is not CostStatus.NOT_APPLICABLE for call in calls)
     return {
         "group": key,
         "calls": len(calls),
@@ -117,13 +129,17 @@ def _aggregate_row(key: str, calls: list[ModelCallRecord]) -> dict[str, Any]:
         "reasoning_tokens": sum(call.reasoning_tokens for call in calls),
         "total_tokens": sum(call.total_tokens for call in calls),
         "estimated_cost_usd": known_cost,
-        "cost_complete": all(call.estimated_cost_usd is not None for call in calls),
+        "cost_display": f"{known_cost:.8f}" if cost_applicable else "N/A",
+        "cost_complete": all(
+            call.estimated_cost_usd is not None or call.cost_status is CostStatus.NOT_APPLICABLE
+            for call in calls
+        ),
         "latency_ms": sum(call.latency_ms for call in calls),
         "failures": sum(not call.success for call in calls),
         "missing_usage_calls": sum(call.usage_status.value == "missing" for call in calls),
         "offline_calls": sum(call.usage_status.value == "offline" for call in calls),
         "legacy_calls": sum(call.usage_status.value == "legacy" for call in calls),
-        "unknown_price_calls": sum(call.estimated_cost_usd is None for call in calls),
+        "unknown_price_calls": sum(call.cost_status is CostStatus.UNKNOWN for call in calls),
         "known_retries": sum(call.retry_count or 0 for call in calls),
         "unknown_retry_calls": sum(call.retry_count is None for call in calls),
     }

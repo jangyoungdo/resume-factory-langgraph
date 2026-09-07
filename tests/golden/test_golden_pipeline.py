@@ -12,4 +12,3 @@ async def test_public_golden_case_has_zero_fact_failures() -> None:
     assert result.validation.metrics["unsupported_claim_count"] == 0
     assert result.validation.metrics["numeric_mismatch_count"] == 0
     assert result.validation.metrics["fact_collision_count"] == 0
-

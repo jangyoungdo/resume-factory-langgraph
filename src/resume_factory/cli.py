@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import platform
+import shutil
 import subprocess
 import sys
+from datetime import date
 from pathlib import Path
 from typing import Annotated, cast
 
@@ -11,12 +14,20 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from .agents import DeterministicBackend, OpenAIBackend
+from .agents import AgentBackend, DeterministicBackend, OpenAIBackend
+from .codex_backend import CodexExecBackend
 from .config import Settings
 from .deliverables import render_bundle_file
 from .graph import run_resume_graph
 from .indexing import build_curated_index
-from .schemas import ApplicationInput, ExecutionMode, FeedbackDecision
+from .intake import load_application_from_mcp
+from .schemas import (
+    ApplicationInput,
+    ExecutionMode,
+    FeedbackDecision,
+    SubmissionAnswer,
+    SubmissionBundle,
+)
 from .storage import RunStore
 from .tracking import Tracker
 from .usage import GroupBy, build_feedback, compare_reports, usage_report
@@ -28,9 +39,20 @@ console = Console()
 
 
 @app.command()
-def doctor() -> None:
+def doctor(
+    backend: Annotated[str | None, typer.Option(help="offline, codex, or openai")] = None,
+) -> None:
     """Check runtime, privacy boundaries, credentials, and optional services."""
     settings = Settings.from_env()
+    selected_backend = backend or settings.backend
+    codex_authenticated = False
+    if selected_backend == "codex":
+        try:
+            codex = CodexExecBackend(settings)
+            asyncio.run(codex.verify_chatgpt_auth())
+            codex_authenticated = True
+        except (FileNotFoundError, RuntimeError):
+            codex_authenticated = False
     checks = {
         "Python 3.12": sys.version_info[:2] == (3, 12),
         "OpenAI key (optional offline)": bool(settings.openai_api_key),
@@ -39,6 +61,7 @@ def doctor() -> None:
             settings.notion_snapshot_dir and settings.notion_snapshot_dir.exists()
         ),
         "Local data excluded": settings.local_dir.name == ".local",
+        "Codex ChatGPT login": codex_authenticated if selected_backend == "codex" else True,
     }
     table = Table(title=f"Resume Factory doctor · {platform.python_version()}")
     table.add_column("Check")
@@ -67,7 +90,9 @@ def index_command(
 
 @app.command()
 def run(
-    input: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    input: Annotated[Path | None, typer.Option(exists=True, dir_okay=False)] = None,
+    application_id: Annotated[str | None, typer.Option()] = None,
+    backend: Annotated[str | None, typer.Option(help="offline, codex, or openai")] = None,
     offline: Annotated[
         bool, typer.Option(help="Use deterministic agents and no external API")
     ] = False,
@@ -75,15 +100,140 @@ def run(
 ) -> None:
     """Run the graph and save a private, non-overwriting draft result."""
     settings = Settings.from_env()
-    application_input = ApplicationInput.model_validate_json(input.read_text(encoding="utf-8"))
-    backend = DeterministicBackend() if offline else OpenAIBackend(settings)
+    if bool(input) == bool(application_id):
+        raise typer.BadParameter("provide exactly one of --input or --application-id")
+    application_input = (
+        ApplicationInput.model_validate_json(input.read_text(encoding="utf-8"))
+        if input
+        else asyncio.run(load_application_from_mcp(str(application_id)))
+    )
+    selected_backend = "offline" if offline else (backend or settings.backend)
+    agent_backend: AgentBackend
+    if selected_backend == "offline":
+        agent_backend = DeterministicBackend()
+    elif selected_backend == "openai":
+        agent_backend = OpenAIBackend(settings)
+    elif selected_backend == "codex":
+        cap = 10 + 6 * len(application_input.questions)
+        codex_backend = CodexExecBackend(
+            settings,
+            max_concurrency=settings.codex_max_concurrency,
+            hard_call_cap=cap,
+            timeout_seconds=settings.codex_timeout_seconds,
+        )
+        asyncio.run(codex_backend.verify_chatgpt_auth())
+        agent_backend = codex_backend
+    else:
+        raise typer.BadParameter("backend must be offline, codex, or openai")
     selected_mode = mode or settings.execution_mode
     tracker = Tracker(settings)
     with tracker.run(f"{application_input.company}-{application_input.job}"):
-        result = asyncio.run(run_resume_graph(application_input, backend, selected_mode))
+        result = asyncio.run(run_resume_graph(application_input, agent_backend, selected_mode))
         tracker.log_result(result)
     path = RunStore(settings.local_dir).save(result)
+    input_path = settings.local_dir / "runs" / f"{result.run_id}.input.json"
+    input_path.write_text(application_input.model_dump_json(indent=2), encoding="utf-8")
     console.print(f"run_id={result.run_id} status={result.status} saved={path}")
+
+
+@app.command()
+def resume(run_id: str) -> None:
+    """Resume a stored run by rerunning only from its private persisted input."""
+    settings = Settings.from_env()
+    source = settings.local_dir / "runs" / f"{run_id}.input.json"
+    if not source.exists():
+        raise typer.BadParameter(f"private input not found for run {run_id}")
+    application_input = ApplicationInput.model_validate_json(source.read_text(encoding="utf-8"))
+    agent_backend = CodexExecBackend(
+        settings,
+        max_concurrency=settings.codex_max_concurrency,
+        hard_call_cap=10 + 6 * len(application_input.questions),
+        timeout_seconds=settings.codex_timeout_seconds,
+    )
+    asyncio.run(agent_backend.verify_chatgpt_auth())
+    result = asyncio.run(
+        run_resume_graph(application_input, agent_backend, settings.execution_mode)
+    )
+    path = RunStore(settings.local_dir).save(result)
+    console.print(f"resumed_from={run_id} run_id={result.run_id} saved={path}")
+
+
+@app.command()
+def deliver(
+    run_id: str,
+    review_patch: Annotated[Path | None, typer.Option(exists=True, dir_okay=False)] = None,
+) -> None:
+    """Create non-overwriting private JSON and Markdown review deliverables."""
+    settings = Settings.from_env()
+    result = RunStore(settings.local_dir).load(run_id)
+    replacements: dict[str, list[list[str]]] = {}
+    if review_patch:
+        raw_patch = json.loads(review_patch.read_text(encoding="utf-8"))
+        replacements = dict(raw_patch.get("replacements", {}))
+    destination = settings.local_dir / "deliverables"
+    destination.mkdir(parents=True, exist_ok=True)
+    stem = f"{result.input_summary['company']}_{result.input_summary['job']}_{date.today():%Y%m%d}"
+    revision = 1
+    while (destination / f"{stem}_rev{revision}.json").exists():
+        revision += 1
+    prompts = {item.question_id: item.direct_answer_required for item in result.question_contracts}
+    answers = []
+    for answer in result.answers:
+        submission = answer.submission_text
+        for old, new in replacements.get(answer.question_id, []):
+            if old not in submission:
+                raise typer.BadParameter(
+                    f"review patch text not found in {answer.question_id}: {old}"
+                )
+            submission = submission.replace(old, new, 1)
+        if "\n" in submission:
+            headline, body = submission.split("\n", 1)
+        else:
+            headline, body = "", submission
+        answers.append(
+            SubmissionAnswer(
+                question_id=answer.question_id,
+                prompt=prompts[answer.question_id],
+                character_limit=answer.character_limit or 1000,
+                headline=headline,
+                body=body,
+                evidence_ids=answer.evidence_ids,
+                warnings=[
+                    issue.message
+                    for issue in result.validation.issues
+                    if not issue.code.startswith("CHARACTER_")
+                    and (
+                        issue.sentence_id is None
+                        or issue.sentence_id.startswith(answer.question_id)
+                    )
+                ],
+            )
+        )
+    bundle = SubmissionBundle(
+        company=result.input_summary["company"],
+        job=result.input_summary["job"],
+        revision=revision,
+        source_run_id=run_id,
+        answers=answers,
+        eligibility_warnings=result.eligibility_warnings,
+    )
+    json_path = destination / f"{stem}_rev{revision}.json"
+    json_path.write_text(bundle.model_dump_json(indent=2), encoding="utf-8")
+    markdown_path = render_bundle_file(json_path, destination / f"{stem}_rev{revision}.md")
+    console.print(f"json={json_path} markdown={markdown_path}")
+
+
+@app.command("install-codex-skill")
+def install_codex_skill() -> None:
+    """Install the versioned Resume Factory skill into the personal Codex skills folder."""
+    source = Path(__file__).parents[2] / "integrations" / "codex-skill" / "resume-factory"
+    destination = Path.home() / ".codex" / "skills" / "resume-factory"
+    if not source.exists():
+        raise typer.BadParameter(f"skill source not found: {source}")
+    if destination.exists():
+        shutil.rmtree(destination)
+    shutil.copytree(source, destination)
+    console.print(f"installed={destination}")
 
 
 @app.command()
@@ -104,11 +254,25 @@ def usage_list(limit: Annotated[int, typer.Option(min=1, max=500)] = 20) -> None
     """List locally retained usage summaries."""
     rows = RunStore(Settings.from_env().local_dir).list_usage_runs(limit)
     table = Table(title="Resume Factory usage runs")
-    columns = ("run_id", "company", "job", "mode", "total_tokens", "total_cost_usd")
+    columns = (
+        "run_id",
+        "company",
+        "job",
+        "mode",
+        "provider",
+        "total_tokens",
+        "cost",
+    )
     for column in columns:
         table.add_column(column)
     for row in rows:
-        table.add_row(*(str(row[column]) for column in columns))
+        values = {
+            **row,
+            "cost": (
+                "N/A" if row.get("cost_status") == "not_applicable" else str(row["total_cost_usd"])
+            ),
+        }
+        table.add_row(*(str(values[column]) for column in columns))
     console.print(table)
 
 
@@ -170,7 +334,7 @@ def usage_compare(
             str(item["run_id"]),
             str(item["mode"]),
             str(total["total_tokens"]),
-            f"{float(cast(float | int, total['estimated_cost_usd'])):.6f}",
+            str(total["cost_display"]),
             str(total["cost_complete"]),
             str(item["status"]),
             str(validation.get("character_target_hit_count", "-")),
@@ -215,8 +379,9 @@ def _print_usage_report(report: dict[str, object]) -> None:
     total = cast(dict[str, object], report["total"])
     console.print(
         f"run={report['run_id']} mode={report['mode']} status={report['status']} "
+        f"provider={report['provider']} billing={report['billing_mode']} "
         f"tokens={total['total_tokens']} "
-        f"cost_usd={float(cast(float | int, total['estimated_cost_usd'])):.6f} "
+        f"cost_usd={total['cost_display']} "
         f"cost_complete={total['cost_complete']}"
     )
     table = Table(title="Usage breakdown")
@@ -247,10 +412,7 @@ def _print_usage_report(report: dict[str, object]) -> None:
     if top:
         console.print(
             "Top agents: "
-            + ", ".join(
-                f"{item['group']}=${float(cast(float | int, item['estimated_cost_usd'])):.6f}"
-                for item in top[:10]
-            )
+            + ", ".join(f"{item['group']}={item['cost_display']}" for item in top[:10])
         )
     console.print_json(data=cast(dict[str, object], report["validation"]))
 
@@ -273,9 +435,7 @@ def eval_command(suite: Annotated[str, typer.Option()] = "golden") -> None:
     """Run the public, synthetic regression suite."""
     if suite != "golden":
         raise typer.BadParameter("only the golden suite is available")
-    completed = subprocess.run(
-        [sys.executable, "-m", "pytest", "tests/golden"], check=False
-    )
+    completed = subprocess.run([sys.executable, "-m", "pytest", "tests/golden"], check=False)
     raise typer.Exit(completed.returncode)
 
 

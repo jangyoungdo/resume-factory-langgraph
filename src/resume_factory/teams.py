@@ -17,6 +17,8 @@ class TeamDefinition:
     specialists: tuple[AgentSpec, ...]
     lead_role: str
     lead_tier: ModelTier = ModelTier.TERRA
+    include_critic: bool = True
+    allow_sol: bool = True
 
 
 TEAMS: dict[str, TeamDefinition] = {
@@ -25,43 +27,40 @@ TEAMS: dict[str, TeamDefinition] = {
         (
             AgentSpec("business_analyst", ModelTier.LUNA, "사업 문제와 경쟁 방식"),
             AgentSpec("job_demand_analyst", ModelTier.LUNA, "JD 책임과 요구 역량"),
-            AgentSpec("process_kpi_analyst", ModelTier.TERRA, "업무 프로세스와 KPI"),
-            AgentSpec("industry_comparison_analyst", ModelTier.LUNA, "산업 특수성"),
         ),
         "intelligence_lead",
+        include_critic=False,
     ),
     "question_strategy": TeamDefinition(
         "question_strategy",
         (
             AgentSpec("literal_question_analyst", ModelTier.LUNA, "명시적 요구"),
             AgentSpec("recruiter_intent_analyst", ModelTier.LUNA, "채용 구매 의도"),
-            AgentSpec("hiring_manager_analyst", ModelTier.TERRA, "실무 투입 관점"),
-            AgentSpec("adversarial_interviewer", ModelTier.LUNA, "예상 반론"),
         ),
         "answer_architect",
+        include_critic=False,
     ),
-    "evidence": TeamDefinition(
-        "evidence",
+    "evidence_branding": TeamDefinition(
+        "evidence_branding",
         (
-            AgentSpec("relevance_matcher", ModelTier.LUNA, "질문 관련성"),
-            AgentSpec("differentiation_analyst", ModelTier.TERRA, "지원자 차별성"),
-            AgentSpec("boundary_agent", ModelTier.LUNA, "기여 범위와 과장 방지"),
-            AgentSpec("transfer_designer", ModelTier.TERRA, "회사 업무 전이"),
+            AgentSpec("evidence_transfer_analyst", ModelTier.LUNA, "근거 경계와 직무 전이"),
+            AgentSpec("positioning_strategist", ModelTier.LUNA, "채용 포지셔닝과 차별성"),
         ),
-        "evidence_lead",
-    ),
-    "branding": TeamDefinition(
-        "branding",
-        (
-            AgentSpec("positioning_strategist", ModelTier.TERRA, "채용 포지셔닝"),
-            AgentSpec("recruiter_simulator", ModelTier.LUNA, "서류 첫인상"),
-            AgentSpec("hiring_manager_simulator", ModelTier.TERRA, "실무 기여"),
-            AgentSpec("brand_copy_strategist", ModelTier.LUNA, "일관된 브랜드 언어"),
-            AgentSpec("skeptical_recruiter", ModelTier.LUNA, "회사 교체 가능성과 과장"),
-        ),
-        "brand_director",
+        "evidence_brand_lead",
+        include_critic=False,
     ),
 }
+
+
+WRITING_COUNCIL = TeamDefinition(
+    "writing_council",
+    (
+        AgentSpec("grounded_story_writer", ModelTier.LUNA, "PREP·SOARA와 근거 계보"),
+        AgentSpec("recruiter_value_writer", ModelTier.LUNA, "직접 답변과 채용 가치"),
+    ),
+    "writing_editor",
+    include_critic=True,
+)
 
 
 BLOCK_TEAMS: dict[str, TeamDefinition] = {
@@ -164,7 +163,7 @@ class TeamRunState(TypedDict, total=False):
 
 def _adjust_for_mode(specs: tuple[AgentSpec, ...], mode: ExecutionMode) -> list[AgentSpec]:
     if mode is ExecutionMode.ECONOMY:
-        return list(specs[:2])
+        return list(specs[:1])
     if mode is ExecutionMode.PREMIUM:
         return list(specs)
     return list(specs[: max(2, len(specs) - 1)])
@@ -216,9 +215,7 @@ async def _run_specialist(state: TeamRunState) -> dict[str, Any]:
         brief={**state["brief"], "focus": spec.focus},
         tier=spec.tier,
         question_id=(
-            str(state["brief"]["question_id"])
-            if state["brief"].get("question_id")
-            else None
+            str(state["brief"]["question_id"]) if state["brief"].get("question_id") else None
         ),
         call_kind=CallKind.SPECIALIST,
     )
@@ -241,31 +238,36 @@ async def _finalize_team(state: TeamRunState) -> dict[str, Any]:
             "evidence_ids": item.evidence_ids,
             "risks": item.risks,
             "weighted_score": item.score.weighted,
+            "draft": item.draft.model_dump() if item.draft else None,
+            "drafts": [draft.model_dump() for draft in item.drafts],
         }
         for item in ranked
     ]
-    critic = await backend.propose(
-        role=f"{definition.name}_anonymous_critic",
-        team=definition.name,
-        brief={**brief, "anonymous_candidates": anonymous_candidates},
-        tier=ModelTier.LUNA,
-        question_id=(str(brief["question_id"]) if brief.get("question_id") else None),
-        call_kind=CallKind.CRITIC,
-    )
+    critic = None
+    if definition.include_critic:
+        critic = await backend.propose(
+            role=f"{definition.name}_anonymous_critic",
+            team=definition.name,
+            brief={**brief, "anonymous_candidates": anonymous_candidates},
+            tier=ModelTier.LUNA,
+            question_id=(str(brief["question_id"]) if brief.get("question_id") else None),
+            call_kind=CallKind.CRITIC,
+        )
     lead = await backend.propose(
         role=definition.lead_role,
         team=definition.name,
         brief={
             **brief,
             "anonymous_candidates": anonymous_candidates,
-            "critic": critic.model_dump(),
+            "critic": critic.model_dump() if critic else None,
         },
         tier=definition.lead_tier,
         question_id=(str(brief["question_id"]) if brief.get("question_id") else None),
         call_kind=CallKind.LEAD,
     )
     needs_sol = (
-        mode is not ExecutionMode.ECONOMY
+        definition.allow_sol
+        and mode is not ExecutionMode.ECONOMY
         and (margin < 0.3 or winner.confidence < 0.75)
         and any(item.needs_escalation for item in ranked)
     )
@@ -277,7 +279,7 @@ async def _finalize_team(state: TeamRunState) -> dict[str, Any]:
             brief={
                 **brief,
                 "anonymous_candidates": anonymous_candidates[:2],
-                "critic": critic.model_dump(),
+                "critic": critic.model_dump() if critic else None,
                 "lead": lead.model_dump(),
             },
             tier=ModelTier.SOL,
@@ -296,6 +298,7 @@ async def _finalize_team(state: TeamRunState) -> dict[str, Any]:
             confidence=winner.confidence,
             evidence_ids=winner.evidence_ids,
             escalated_to=escalated_to,
+            selected_draft=lead.draft or winner.draft,
         )
     }
 

@@ -1,0 +1,7 @@
+interface:
+  display_name: "Resume Factory"
+  short_description: "근거 기반 LangGraph 자소서 파이프라인 실행"
+  default_prompt: "$resume-factory로 이 지원서의 근거를 검증하고 최종 검토본을 만들어줘."
+
+policy:
+  allow_implicit_invocation: true

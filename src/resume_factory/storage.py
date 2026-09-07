@@ -104,10 +104,40 @@ class RunStore:
                 )
                 """
             )
-            connection.execute(
-                "INSERT OR IGNORE INTO schema_migrations(version) VALUES (2)"
-            )
+            connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES (2)")
+            self._migrate_v3(connection)
             self._backfill_legacy_runs(connection)
+
+    def _migrate_v3(self, connection: sqlite3.Connection) -> None:
+        usage_columns = {
+            "provider": "TEXT NOT NULL DEFAULT 'local'",
+            "billing_mode": "TEXT NOT NULL DEFAULT 'offline'",
+            "cost_status": "TEXT NOT NULL DEFAULT 'not_applicable'",
+            "graph_version": "TEXT NOT NULL DEFAULT 'v0.4'",
+            "graph_nodes_completed_json": "TEXT NOT NULL DEFAULT '[]'",
+            "base_call_budget": "INTEGER NOT NULL DEFAULT 0",
+            "optional_calls_used": "INTEGER NOT NULL DEFAULT 0",
+            "hard_call_cap": "INTEGER NOT NULL DEFAULT 0",
+        }
+        call_columns = {
+            "provider": "TEXT NOT NULL DEFAULT 'local'",
+            "billing_mode": "TEXT NOT NULL DEFAULT 'offline'",
+            "cost_status": "TEXT NOT NULL DEFAULT 'not_applicable'",
+            "provider_run_id": "TEXT",
+        }
+        for name, definition in usage_columns.items():
+            self._ensure_column(connection, "usage_runs", name, definition)
+        for name, definition in call_columns.items():
+            self._ensure_column(connection, "model_calls", name, definition)
+        connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES (3)")
+
+    @staticmethod
+    def _ensure_column(
+        connection: sqlite3.Connection, table: str, name: str, definition: str
+    ) -> None:
+        existing = {str(row[1]) for row in connection.execute(f"PRAGMA table_info({table})")}
+        if name not in existing:
+            connection.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
 
     def _backfill_legacy_runs(self, connection: sqlite3.Connection) -> None:
         rows = connection.execute(
@@ -155,8 +185,10 @@ class RunStore:
             (run_id, status, company, job, mode, input_tokens, cached_input_tokens,
              output_tokens, reasoning_tokens, total_tokens, total_cost_usd,
              cost_complete, price_catalog_version, character_rewrite_count,
-             validation_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             validation_json, provider, billing_mode, cost_status, graph_version,
+             graph_nodes_completed_json, base_call_budget, optional_calls_used,
+             hard_call_cap)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 result.run_id,
@@ -174,13 +206,28 @@ class RunStore:
                 result.telemetry.price_catalog_version,
                 len(result.telemetry.metadata.get("character_rewrite_attempts", [])),
                 json.dumps(result.validation.metrics, ensure_ascii=False),
+                result.telemetry.provider.value,
+                result.telemetry.billing_mode.value,
+                result.telemetry.cost_status.value,
+                result.telemetry.graph_version,
+                json.dumps(result.telemetry.graph_nodes_completed, ensure_ascii=False),
+                result.telemetry.base_call_budget,
+                result.telemetry.optional_calls_used,
+                result.telemetry.hard_call_cap,
             ),
         )
         connection.execute("DELETE FROM model_calls WHERE run_id = ?", (result.run_id,))
         connection.executemany(
             """
-            INSERT INTO model_calls VALUES
-            (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO model_calls
+            (call_id, run_id, sequence, question_id, team, agent_role, call_kind,
+             tier, model, input_tokens, cached_input_tokens,
+             cache_creation_input_tokens, output_tokens, reasoning_tokens,
+             total_tokens, estimated_cost_usd, price_catalog_version, latency_ms,
+             retry_count, usage_status, success, error_code, started_at,
+             provider, billing_mode, cost_status, provider_run_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?)
             """,
             [
                 (
@@ -211,6 +258,10 @@ class RunStore:
                     int(call.success),
                     call.error_code,
                     call.started_at.isoformat(),
+                    call.provider.value,
+                    call.billing_mode.value,
+                    call.cost_status.value,
+                    call.provider_run_id,
                 )
                 for index, call in enumerate(result.telemetry.model_calls, start=1)
             ],
