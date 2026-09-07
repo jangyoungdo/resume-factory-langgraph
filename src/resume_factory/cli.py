@@ -20,7 +20,7 @@ from rich.table import Table
 from .agents import AgentBackend, DeterministicBackend, OpenAIBackend
 from .codex_backend import CodexExecBackend, CodexNetworkDegradedError
 from .config import Settings
-from .deliverables import render_bundle_file
+from .deliverables import render_bundle_file, validate_submission_bundle
 from .graph import run_resume_graph
 from .indexing import build_curated_index
 from .intake import load_application_from_mcp
@@ -392,8 +392,15 @@ def _create_deliverable(
         eligibility_warnings=result.eligibility_warnings,
     )
     json_path = destination / f"{stem}_rev{revision}.json"
+    markdown_path = destination / f"{stem}_rev{revision}.md"
+    errors = validate_submission_bundle(bundle)
+    if errors:
+        raise ValueError("; ".join(errors))
+    if json_path.exists() or markdown_path.exists():
+        existing = json_path if json_path.exists() else markdown_path
+        raise FileExistsError(f"refusing to overwrite existing deliverable: {existing}")
     json_path.write_text(bundle.model_dump_json(indent=2), encoding="utf-8")
-    markdown_path = render_bundle_file(json_path, destination / f"{stem}_rev{revision}.md")
+    markdown_path = render_bundle_file(json_path, markdown_path)
     return json_path, markdown_path
 
 
