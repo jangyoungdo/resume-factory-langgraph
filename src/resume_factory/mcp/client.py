@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 from typing import Any, cast
 
@@ -10,16 +11,23 @@ from langchain_mcp_adapters.client import MultiServerMCPClient
 def server_configs() -> dict[str, dict[str, Any]]:
     # Do not resolve the venv symlink: doing so escapes the environment and loses packages.
     executable = sys.executable
+    environment = {
+        key: value
+        for key in ("RF_DUAL_BRAIN_ROOT", "RF_NOTION_SNAPSHOT_DIR", "RF_NOTION_TOKEN")
+        if (value := os.getenv(key))
+    }
     return {
         "dual_brain": {
             "command": executable,
             "args": ["-m", "resume_factory.mcp.dual_brain_server"],
             "transport": "stdio",
+            "env": environment,
         },
         "notion_intake": {
             "command": executable,
             "args": ["-m", "resume_factory.mcp.notion_intake_server"],
             "transport": "stdio",
+            "env": environment,
         },
     }
 
@@ -32,9 +40,7 @@ async def load_tools_isolated(
     health: dict[str, str] = {}
     for server_name, config in (configs or server_configs()).items():
         try:
-            client = MultiServerMCPClient(
-                cast(Any, {server_name: config}), tool_name_prefix=True
-            )
+            client = MultiServerMCPClient(cast(Any, {server_name: config}), tool_name_prefix=True)
             server_tools = await asyncio.wait_for(client.get_tools(), timeout_seconds)
             tools.extend(server_tools)
             health[server_name] = "healthy"

@@ -39,15 +39,10 @@ def test_notion_property_normalization() -> None:
         "직무": {"type": "select", "select": {"name": "Maintenance Engineer"}},
     }
     assert notion_intake_server._first_property(properties, ("회사",)) == "Sample Steel"
-    assert (
-        notion_intake_server._first_property(properties, ("직무",))
-        == "Maintenance Engineer"
-    )
+    assert notion_intake_server._first_property(properties, ("직무",)) == "Maintenance Engineer"
 
 
-async def test_one_mcp_failure_does_not_remove_healthy_tools(
-    monkeypatch, tmp_path: Path
-) -> None:
+async def test_one_mcp_failure_does_not_remove_healthy_tools(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("RF_DUAL_BRAIN_ROOT", str(tmp_path))
     configs = {
         "dual_brain": server_configs()["dual_brain"],

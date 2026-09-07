@@ -111,9 +111,7 @@ def get_project_boundary(event_id: str) -> dict[str, Any]:
 @mcp.tool()
 def get_previous_feedback(company: str, question_type: str) -> dict[str, Any]:
     """Read feedback scoped to the same company and question type."""
-    feedback_path = safe_path(
-        _root(), _root() / ".resume_factory" / "feedback" / "feedback.jsonl"
-    )
+    feedback_path = safe_path(_root(), _root() / ".resume_factory" / "feedback" / "feedback.jsonl")
     if not feedback_path.exists():
         return {"results": []}
     results: list[dict[str, Any]] = []
