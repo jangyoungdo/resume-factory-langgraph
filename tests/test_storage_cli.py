@@ -120,3 +120,4 @@ async def test_performance_cli_reads_v06_timeline(tmp_path: Path, monkeypatch) -
     assert "company_job_intelligence" in shown.output
     assert summary.exit_code == 0
     assert '"status": "provisional"' in summary.output
+    assert '"healthy_runs": 0' in summary.output

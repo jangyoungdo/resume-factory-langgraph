@@ -438,6 +438,7 @@ def performance_summary(
         int(cast(int, row["wall_time_ms"]))
         for row in rows
         if row.get("graph_version") == "v0.6"
+        and row.get("provider") == "codex_cli"
         and row.get("network_status") == "healthy"
         and row.get("wall_time_ms") is not None
     ][:limit]
